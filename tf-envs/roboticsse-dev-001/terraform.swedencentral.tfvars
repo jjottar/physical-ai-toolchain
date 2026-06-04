@@ -41,7 +41,7 @@ node_pools = {
     priority                   = "Regular"
     should_enable_auto_scaling = true
     min_count                  = 1
-    max_count                  = 1
+    max_count                  = 4
     zones                      = []
   }
 }
