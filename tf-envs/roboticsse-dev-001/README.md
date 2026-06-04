@@ -59,8 +59,7 @@ OSMO has been updated to version 6.3. To use it:
 1. Connect to VPN (if private cluster) and check connectivity `kubectl cluster-info`
 1. In terminal 1, port-foward OSMO service: `kubectl port-forward svc/osmo-gateway 9001:80 -n osmo-control-plane`
 1. Open OSMO dashboard <http://localhost:9001/>
-1. Login with OSMO cli: `osmo login http://localhost:9001/ --method token --token "$(kubectl get secret osmo-def
-ault-admin -n osmo-control-plane -o jsonpath='{.data.password}' | base64 -d)"
+1. Login with OSMO cli: `osmo login http://localhost:9001/ --method token --token "$(kubectl get secret osmo-default-admin -n osmo-control-plane -o jsonpath='{.data.password}' | base64 -d)"`
 1. List OSMO pools: `osmo pool list`
 1. Submit hello world job: `osmo workflow submit <(curl -fsSL https://raw.githubusercontent.com/NVIDIA/OSMO/refs/heads/main/cookbook/tutorials/hello_world.yaml)`
 
