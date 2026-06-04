@@ -1,4 +1,4 @@
-resource_group_name  = "rg-roboticsse-dev-001"
+resource_group_name  = "rg-iac"
 storage_account_name = "sttfstatevars"
 container_name       = "physical-ai-toolchain"
 key                  = "swedencentral/vpn-terraform.tfstate"
