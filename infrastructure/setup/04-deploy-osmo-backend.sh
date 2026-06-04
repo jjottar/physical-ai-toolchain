@@ -104,6 +104,11 @@ run_preflight_checks() {
   validate_version_pair "$chart_version" "$image_version" "$chart_version_set" "$image_version_set"
 }
 
+uses_gateway_service() {
+  local version="${1:?chart version required}"
+  [[ "$version" =~ ^1\.([3-9]|[1-9][0-9])\. ]] || [[ "$version" =~ ^[2-9]\. ]]
+}
+
 az account show &>/dev/null || fatal "Azure CLI not logged in; run 'az login'"
 
 #------------------------------------------------------------------------------
@@ -321,6 +326,9 @@ section "Deploy Backend Operator"
 
 # Backend operator connects to the agent service (which has both auth and WebSocket endpoints)
 agent_service_url="http://osmo-agent.${NS_OSMO_CONTROL_PLANE}.svc.cluster.local"
+if uses_gateway_service "$chart_version"; then
+  agent_service_url="http://osmo-gateway.${NS_OSMO_CONTROL_PLANE}.svc.cluster.local"
+fi
 info "Agent service URL: $agent_service_url"
 
 if [[ "$use_acr" == "true" ]]; then
@@ -356,7 +364,7 @@ fi
 [[ "$nvcr_auth_active" == "true" ]] && helm_args+=(--set "global.imagePullSecret=$NVCR_PULL_SECRET")
 
 if [[ "$use_access_keys" == "false" ]]; then
-  helm_args+=(-f "$identity_values" --set "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
+  helm_args+=(-f "$identity_values" --set-string "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
 fi
 
 if [[ "$use_acr" == "true" ]]; then
@@ -397,6 +405,7 @@ export CONTROL_PLANE_NAMESPACE="$NS_OSMO_CONTROL_PLANE"
 export STORAGE_ACCESS_KEY_ID="osmo-control-plane-storage"
 export STORAGE_ACCESS_KEY="$storage_connection_string"
 export WORKFLOW_BASE_URL="$workflow_base_url"
+export WORKFLOW_CONTAINER_ENDPOINT="$azure_container"
 export WORKFLOW_DATA_ENDPOINT="${azure_container}/workflows/data"
 export WORKFLOW_LOG_ENDPOINT="${azure_container}/workflows/logs"
 export WORKFLOW_APP_ENDPOINT="${azure_container}/apps"
@@ -495,10 +504,36 @@ jq -n --argjson pools "$combined_pools" '{"pools": $pools}' > "$CONFIG_DIR/out/c
 # Render other configs
 envsubst < "$scheduler_template" > "$CONFIG_DIR/out/scheduler-config.json"
 envsubst < "$workflow_template" > "$CONFIG_DIR/out/workflow-config.json"
+workflow_config_to_apply="$CONFIG_DIR/out/workflow-config.json"
 if [[ "$use_access_keys" == "false" ]]; then
-  jq '.credential_config.disable_data_validation = ["azure"]' \
+  jq \
+    --arg endpoint "$WORKFLOW_CONTAINER_ENDPOINT" \
+    '.workflow_data.credential = {"endpoint": $endpoint} |
+     .workflow_data.base_url = $endpoint |
+     .workflow_log.credential = {"endpoint": $endpoint} |
+     .workflow_app.credential = {"endpoint": $endpoint} |
+     .credential_config.disable_data_validation = ["azure"]' \
     "$CONFIG_DIR/out/workflow-config.json" > "$CONFIG_DIR/out/workflow-config.json.tmp"
   mv "$CONFIG_DIR/out/workflow-config.json.tmp" "$CONFIG_DIR/out/workflow-config.json"
+
+  if osmo config show WORKFLOW 2>/dev/null | jq -e '
+    .workflow_data.credential.access_key_id? or
+    .workflow_data.credential.access_key? or
+    .workflow_log.credential.access_key_id? or
+    .workflow_log.credential.access_key? or
+    .workflow_app.credential.access_key_id? or
+    .workflow_app.credential.access_key?
+  ' >/dev/null; then
+    workflow_config_to_apply="$CONFIG_DIR/out/workflow-config-cleanup.json"
+    jq \
+      '.workflow_data.credential.access_key_id = {"$action": "delete"} |
+       .workflow_data.credential.access_key = {"$action": "delete"} |
+       .workflow_log.credential.access_key_id = {"$action": "delete"} |
+       .workflow_log.credential.access_key = {"$action": "delete"} |
+       .workflow_app.credential.access_key_id = {"$action": "delete"} |
+       .workflow_app.credential.access_key = {"$action": "delete"}' \
+      "$CONFIG_DIR/out/workflow-config.json" > "$workflow_config_to_apply"
+  fi
 fi
 
 # Apply OSMO configurations
@@ -514,7 +549,7 @@ osmo config update POOL --file "$CONFIG_DIR/out/combined-pool-config.json" \
   --description "Pool configuration for ${pool_list}"
 
 info "Applying workflow storage configuration..."
-osmo config update WORKFLOW --file "$CONFIG_DIR/out/workflow-config.json" --description "Workflow storage configuration"
+osmo config update WORKFLOW --file "$workflow_config_to_apply" --description "Workflow storage configuration"
 
 info "Setting default pool profile: default (shares with ${DEFAULT_POOL})..."
 osmo profile set pool "default"

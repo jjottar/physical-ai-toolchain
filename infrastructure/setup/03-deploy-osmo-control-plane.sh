@@ -95,6 +95,11 @@ run_preflight_checks() {
   validate_version_pair "$chart_version" "$image_version" "$chart_version_set" "$image_version_set"
 }
 
+uses_unified_control_plane_chart() {
+  local version="${1:?chart version required}"
+  [[ "$version" =~ ^1\.([3-9]|[1-9][0-9])\. ]] || [[ "$version" =~ ^[2-9]\. ]]
+}
+
 #------------------------------------------------------------------------------
 # Gather Configuration
 #------------------------------------------------------------------------------
@@ -141,11 +146,19 @@ fi
 service_values="$VALUES_DIR/osmo-control-plane.yaml"
 router_values="$VALUES_DIR/osmo-router.yaml"
 ui_values="$VALUES_DIR/osmo-ui.yaml"
+unified_values="$VALUES_DIR/osmo-control-plane-unified.yaml"
 service_identity_values="$VALUES_DIR/osmo-control-plane-identity.yaml"
 router_identity_values="$VALUES_DIR/osmo-router-identity.yaml"
 service_config_template="$CONFIG_DIR/service-config.template.json"
 
-for f in "$service_values" "$router_values" "$ui_values"; do
+required_values=("$service_values")
+if uses_unified_control_plane_chart "$chart_version"; then
+  required_values+=("$unified_values")
+else
+  required_values+=("$router_values" "$ui_values")
+fi
+
+for f in "${required_values[@]}"; do
   [[ -f "$f" ]] || fatal "Values file not found: $f"
 done
 
@@ -305,6 +318,7 @@ section "Deploy OSMO Charts"
 base_helm_args=(
   --version "$chart_version"
   --namespace "$NS_OSMO_CONTROL_PLANE"
+  --force-conflicts
   --set-string "global.osmoImageTag=$image_version"
 )
 [[ "$use_acr" == "true" ]] && base_helm_args+=(--set "global.osmoImageLocation=${acr_login_server}/osmo")
@@ -313,6 +327,7 @@ base_helm_args=(
 # Deploy service
 info "Deploying osmo/service..."
 helm_args=("${base_helm_args[@]}" -f "$service_values" --set "services.postgres.serviceName=$pg_fqdn" --set "services.postgres.user=$pg_user")
+uses_unified_control_plane_chart "$chart_version" && helm_args+=(-f "$unified_values")
 if [[ "$use_incluster_redis" == "true" ]]; then
   helm_args+=(
     --set "services.redis.enabled=true"
@@ -322,7 +337,16 @@ if [[ "$use_incluster_redis" == "true" ]]; then
 else
   helm_args+=(--set "services.redis.serviceName=$redis_hostname" --set "services.redis.port=$redis_port")
 fi
-[[ -n "$osmo_identity_client_id" ]] && helm_args+=(-f "$service_identity_values" --set "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
+[[ -n "$osmo_identity_client_id" ]] && helm_args+=(-f "$service_identity_values" --set-string "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
+
+if uses_unified_control_plane_chart "$chart_version"; then
+  for legacy_release in router ui; do
+    if helm status "$legacy_release" -n "$NS_OSMO_CONTROL_PLANE" >/dev/null 2>&1; then
+      info "Removing legacy split-chart release: $legacy_release"
+      helm uninstall "$legacy_release" -n "$NS_OSMO_CONTROL_PLANE"
+    fi
+  done
+fi
 
 if [[ "$use_acr" == "true" ]]; then
   helm upgrade -i service "oci://${acr_login_server}/helm/service" "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
@@ -330,25 +354,30 @@ else
   helm upgrade -i service osmo/service "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
 fi
 
-# Deploy router
-info "Deploying osmo/router..."
-helm_args=("${base_helm_args[@]}" -f "$router_values" --set "services.postgres.serviceName=$pg_fqdn" --set "services.postgres.user=$pg_user")
-[[ -n "$osmo_identity_client_id" ]] && helm_args+=(-f "$router_identity_values" --set "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
-
-if [[ "$use_acr" == "true" ]]; then
-  helm upgrade -i router "oci://${acr_login_server}/helm/router" "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+if uses_unified_control_plane_chart "$chart_version"; then
+  info "OSMO chart $chart_version uses the unified control plane chart; skipping legacy router and web-ui releases"
 else
-  helm upgrade -i router osmo/router "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
-fi
 
-# Deploy web-ui
-info "Deploying osmo/web-ui..."
-helm_args=("${base_helm_args[@]}" -f "$ui_values" --set "services.ui.apiHostname=osmo-service.${NS_OSMO_CONTROL_PLANE}.svc.cluster.local:80")
+  # Deploy router
+  info "Deploying osmo/router..."
+  helm_args=("${base_helm_args[@]}" -f "$router_values" --set "services.postgres.serviceName=$pg_fqdn" --set "services.postgres.user=$pg_user")
+  [[ -n "$osmo_identity_client_id" ]] && helm_args+=(-f "$router_identity_values" --set-string "serviceAccount.annotations.azure\.workload\.identity/client-id=$osmo_identity_client_id")
 
-if [[ "$use_acr" == "true" ]]; then
-  helm upgrade -i ui "oci://${acr_login_server}/helm/web-ui" "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
-else
-  helm upgrade -i ui osmo/web-ui "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+  if [[ "$use_acr" == "true" ]]; then
+    helm upgrade -i router "oci://${acr_login_server}/helm/router" "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+  else
+    helm upgrade -i router osmo/router "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+  fi
+
+  # Deploy web-ui
+  info "Deploying osmo/web-ui..."
+  helm_args=("${base_helm_args[@]}" -f "$ui_values" --set "services.ui.apiHostname=osmo-service.${NS_OSMO_CONTROL_PLANE}.svc.cluster.local:80")
+
+  if [[ "$use_acr" == "true" ]]; then
+    helm upgrade -i ui "oci://${acr_login_server}/helm/web-ui" "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+  else
+    helm upgrade -i ui osmo/web-ui "${helm_args[@]}" --wait --timeout "$TIMEOUT_DEPLOY"
+  fi
 fi
 
 #------------------------------------------------------------------------------
@@ -360,6 +389,9 @@ if [[ "$skip_service_config" == "false" ]]; then
   kubectl wait --for=condition=available deployment/osmo-service -n "$NS_OSMO_CONTROL_PLANE" --timeout=120s
 
   cluster_service_url=$(detect_service_url)
+  if uses_unified_control_plane_chart "$chart_version"; then
+    cluster_service_url="http://osmo-gateway.${NS_OSMO_CONTROL_PLANE}.svc.cluster.local"
+  fi
   if [[ -z "$service_url" ]]; then
     service_url="${cluster_service_url}"
   else
@@ -373,8 +405,8 @@ if [[ "$skip_service_config" == "false" ]]; then
       warn "(after: kubectl port-forward svc/osmo-service -n osmo-control-plane 8080:80 &)"
     else
       [[ -f "$service_config_template" ]] || fatal "Service config template not found: $service_config_template"
-      # SERVICE config service_base_url must use the in-cluster URL (ingress LB IP)
-      # so workflow pod sidecars can reach the control plane via the ingress routes.
+      # SERVICE config service_base_url must use the in-cluster gateway URL
+      # so workflow pod sidecars can reach the control plane routes.
       # The user-provided --service-url (e.g. localhost port-forward) is only for CLI access.
       export SERVICE_BASE_URL="${cluster_service_url:-$service_url}"
       envsubst < "$service_config_template" > "$CONFIG_DIR/out/service-config.json"

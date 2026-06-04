@@ -128,8 +128,10 @@ pull_and_verify_chart() {
 read_terraform_outputs() {
   local tf_dir="${1:?terraform directory required}"
   [[ -d "$tf_dir" ]] || fatal "Terraform directory not found: $tf_dir"
-  [[ -f "$tf_dir/terraform.tfstate" ]] || fatal "terraform.tfstate not found in $tf_dir"
-  (cd "$tf_dir" && terraform output -json) || fatal "Unable to read terraform outputs"
+  if [[ ! -f "$tf_dir/terraform.tfstate" && ! -d "$tf_dir/.terraform" ]]; then
+    fatal "Terraform state not found in $tf_dir. Run terraform init for remote state or terraform apply for local state."
+  fi
+  (cd "$tf_dir" && terraform output -json) || fatal "Unable to read terraform outputs from $tf_dir"
 }
 
 # Extract value from terraform JSON output

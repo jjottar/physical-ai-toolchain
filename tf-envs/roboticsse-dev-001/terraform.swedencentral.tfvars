@@ -78,3 +78,14 @@ reports_archive_tier_days                         = 180
 
 // Isaac Sim VM Subnet
 should_create_vm_subnet = true
+
+
+// OSMO configuration using workload identity
+osmo_config = {
+  should_enable_identity   = true
+  should_federate_identity = true
+  should_create_secret     = true
+  control_plane_namespace  = "osmo-control-plane"
+  operator_namespace       = "osmo-operator"
+  workflows_namespace      = "osmo-workflows"
+}

@@ -1,7 +1,7 @@
 {
   "name": "default",
   "k8s_namespace": "${K8S_NAMESPACE}",
-  "router_address": "wss://osmo-service.${CONTROL_PLANE_NAMESPACE}.svc.cluster.local:80",
+  "router_address": "ws://osmo-gateway.${CONTROL_PLANE_NAMESPACE}.svc.cluster.local",
   "node_conditions": {
     "prefix": "",
     "ignore_node_conditions": [],

@@ -161,10 +161,16 @@ if [[ "$skip_kai" == "false" ]]; then
     kai_chart_args=( "$kai_tgz" )
   fi
 
+  kai_helm_args=()
+  if helm upgrade --help | grep -q -- '--server-side'; then
+    kai_helm_args+=( --server-side=false )
+  fi
+
   helm upgrade --install kai-scheduler "${kai_chart_args[@]}" \
     --namespace "$NS_KAI_SCHEDULER" \
     --create-namespace \
     -f "$kai_values" \
+    "${kai_helm_args[@]}" \
     --wait --timeout "$TIMEOUT_DEPLOY"
 
   info "KAI Scheduler installed successfully"
