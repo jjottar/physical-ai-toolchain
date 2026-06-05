@@ -41,6 +41,20 @@ terraform -chdir=vpn init -reconfigure -backend-config=../../../tf-envs/robotics
 terraform -chdir=vpn apply -var-file=../../../tf-envs/roboticsse-dev-001/terraform.swedencentral.vpn.tfvars
 ```
 
+## 🌐 Deploy DNS Components
+
+Run this after `infrastructure/setup/03-deploy-osmo-control-plane.sh`. That script creates the `azureml-ingress-nginx-internal-lb` service used below.
+
+Deploying the DNS component maps the OSMO hostname to the internal load balancer IP used over the VPN.
+Run the following commands from the `infrastructure/terraform` directory:
+
+```bash
+terraform -chdir=dns init -reconfigure -backend-config=../../../tf-envs/roboticsse-dev-001/dns-backend.hcl
+OSMO_INGRESS_IP=$(kubectl get svc -n azureml azureml-ingress-nginx-internal-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+terraform -chdir=dns apply -var="osmo_loadbalancer_ip=$OSMO_INGRESS_IP" -var-file=../../../tf-envs/roboticsse-dev-001/terraform.swedencentral.dns.tfvars
+```
+
+
 ## 🗄️ One-Time State Migration
 
 > This migration has already been completed. Do not run it again; it is documented here for reference only.

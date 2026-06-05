@@ -10,7 +10,7 @@ services:
     serviceAccountName: default
     apiHostname: "osmo-service.osmo-control-plane.svc.cluster.local:80"
 
-    # hostname: "dev.osmo.local"
+    hostname: "dev.osmo.local"
 
     # Ingress configuration
     ingress:
