@@ -151,8 +151,20 @@ pool_ids=$(echo "$node_pools_json" | jq -r 'keys[]')
 
 # Auto-select default pool if not explicitly configured
 if [[ -z "${DEFAULT_POOL:-}" ]]; then
-  DEFAULT_POOL=$(echo "$node_pools_json" | jq -r 'keys | sort | first')
-  warn "DEFAULT_POOL not set — auto-selected '$DEFAULT_POOL' (first pool alphabetically). Set DEFAULT_POOL in .env.local to control this."
+  DEFAULT_POOL=$(echo "$node_pools_json" | jq -r '
+    to_entries
+    | map(select((.value.priority // "") != "Spot"))
+    | sort_by(.key)
+    | first
+    | .key // empty
+  ')
+
+  if [[ -n "$DEFAULT_POOL" ]]; then
+    warn "DEFAULT_POOL not set — auto-selected regular pool '$DEFAULT_POOL'. Set DEFAULT_POOL in .env.local to use a different pool, including spot pools."
+  else
+    DEFAULT_POOL=$(echo "$node_pools_json" | jq -r 'keys | sort | first')
+    warn "DEFAULT_POOL not set and no regular pools were found — auto-selected '$DEFAULT_POOL'. Set DEFAULT_POOL in .env.local to control this explicitly."
+  fi
 fi
 
 # Compute endpoints
@@ -431,8 +443,10 @@ for pool_id in $pool_ids; do
   pod_template_key="aks_${pool_id}"
   platform_pod_entry=$(jq \
     --argjson tolerations "$tolerations" \
+    --arg pool_id "$pool_id" \
     --arg vm_size "$vm_size" \
     '.pod_template.spec.tolerations = $tolerations |
+     .pod_template.spec.nodeSelector["agentpool"] = $pool_id |
      .pod_template.spec.nodeSelector["node.kubernetes.io/instance-type"] = $vm_size |
      .pod_template' "$platform_template")
 

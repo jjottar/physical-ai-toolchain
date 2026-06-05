@@ -44,6 +44,21 @@ node_pools = {
     max_count                  = 4
     zones                      = []
   }
+  h100gpuspot = {
+    vm_size                 = "Standard_NC40ads_H100_v5"
+    subnet_address_prefixes = ["10.0.10.0/24"]
+    node_taints             = ["nvidia.com/gpu:NoSchedule", "kubernetes.azure.com/scalesetpriority=spot:NoSchedule"]
+    gpu_driver              = "Install"
+    node_labels = {
+      "kubernetes.azure.com/scalesetpriority" = "spot"
+    }
+    priority                   = "Spot"
+    should_enable_auto_scaling = true
+    min_count                  = 0
+    max_count                  = 4
+    zones                      = []
+    eviction_policy            = "Delete"
+  }
 }
 
 // OSMO Backend Services
