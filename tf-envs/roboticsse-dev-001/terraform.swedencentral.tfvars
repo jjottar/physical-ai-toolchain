@@ -66,6 +66,40 @@ should_enable_microsoft_defender        = true
 // Keep the allowlist in Terraform so image builds do not depend on portal-side rules.
 aml_managed_network_isolation_mode = "AllowInternetOutbound"
 
+// AzureML Compute Clusters
+aml_compute_clusters = {
+  "nc96ads-a100-v4-lowprio" = {
+    vm_size                   = "Standard_NC96ads_A100_v4"
+    vm_priority               = "LowPriority"
+    min_node_count            = 0
+    max_node_count            = 3
+    scale_down_after_idle     = "PT15M"
+    node_public_ip_enabled    = false
+    ssh_public_access_enabled = false
+    identity_type             = "UserAssigned"
+  },
+  "nc40ads-H100-v5" = {
+    vm_size                   = "Standard_NC40ads_H100_v5"
+    vm_priority               = "Dedicated"
+    min_node_count            = 0
+    max_node_count            = 3
+    scale_down_after_idle     = "PT15M"
+    node_public_ip_enabled    = false
+    ssh_public_access_enabled = false
+    identity_type             = "UserAssigned"
+  },
+  "e4ds-v4" : {
+    vm_size                   = "Standard_E4ds_v4"
+    vm_priority               = "Dedicated"
+    min_node_count            = 0
+    max_node_count            = 3
+    scale_down_after_idle     = "PT15M"
+    node_public_ip_enabled    = false
+    ssh_public_access_enabled = false
+    identity_type             = "UserAssigned"
+  }
+}
+
 // Storage Lifecycle Management
 should_create_data_lake_storage                   = true
 should_enable_raw_bags_lifecycle_policy           = true
