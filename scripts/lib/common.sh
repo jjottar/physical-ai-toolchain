@@ -5,7 +5,7 @@
 # Source repo-root .env.local for local environment overrides (not committed to git)
 _common_sh_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _env_local="$(cd "$_common_sh_dir/../.." 2>/dev/null && pwd)/.env.local"
-if [[ -f "$_env_local" ]]; then
+if [[ "${PHYSICAL_AI_SKIP_ENV_LOCAL:-false}" != "true" && -f "$_env_local" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$_env_local"

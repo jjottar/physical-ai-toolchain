@@ -1,0 +1,38 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: paidf-dig-setup-metal
+description: DIG metal surface setup smoke job for Azure ML attached AKS compute.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+code: ../../../
+environment:
+  image: nvcr.io/nvidia/paidf-anomalygen:1.0.0
+compute: azureml:k8s-compute
+
+outputs:
+  metal_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/metal_surface
+    mode: upload
+  metal_dataset:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/datasets/metal_surface/raw
+    mode: upload
+
+command: >-
+  bash workflows/azureml/common/keyvault-env.sh --
+  bash workflows/azureml/dig/run-setup-metal.sh
+  --model-output ${{outputs.metal_model}}
+  --dataset-output ${{outputs.metal_dataset}}
+
+environment_variables:
+  ACCEPT_EULA: "Y"
+  PRIVACY_CONSENT: "Y"
+  KEY_VAULT_URL: https://placeholder.vault.azure.net
+  HF_TOKEN_SECRET_NAME: paidf-hf-token
+  NGC_API_KEY_SECRET_NAME: none
+
+resources:
+  instance_type: defaultinstancetype

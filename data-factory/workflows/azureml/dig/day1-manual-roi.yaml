@@ -1,0 +1,74 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: paidf-dig-day1-manual-roi
+description: DIG Day 1 manual ROI inference for supported pretrained use cases.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+code: ../../../
+environment:
+  image: nvcr.io/nvidia/paidf-anomalygen:1.0.0
+compute: azureml:k8s-compute
+
+inputs:
+  raw_dataset:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/datasets/metal_surface/raw
+    mode: download
+  pretrained_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/pretrained
+    mode: download
+  cosmos_cache:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/data/models/cosmos_transfer
+    mode: download
+  usecase_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/metal_surface
+    mode: download
+  run_name: texture_defect_gen_day1_manual_roi
+  usecase: metal_surface
+  use_pretrained_checkpoint: "true"
+  checkpoint_step: "10000"
+  anomaly_types_json: '[["metal_surface","MT_Blowhole"],["metal_surface","MT_Break"],["metal_surface","MT_Crack"],["metal_surface","MT_Fray"],["metal_surface","MT_Uneven"]]'
+  num_sdg: "30"
+  default_spatial_dependency: free
+  model_size: 2b
+  min_gpu_memory_gb: "40"
+
+outputs:
+  results:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/runs/${{name}}/day1-manual-roi
+    mode: upload
+
+command: >-
+  bash workflows/azureml/common/keyvault-env.sh --
+  bash workflows/azureml/dig/run-day1-manual-roi.sh
+  --raw-dataset ${{inputs.raw_dataset}}
+  --pretrained-model ${{inputs.pretrained_model}}
+  --cosmos-cache ${{inputs.cosmos_cache}}
+  --usecase-model ${{inputs.usecase_model}}
+  --output-dir ${{outputs.results}}
+  --name ${{inputs.run_name}}
+  --usecase ${{inputs.usecase}}
+  --use-pretrained-checkpoint ${{inputs.use_pretrained_checkpoint}}
+  --checkpoint-step ${{inputs.checkpoint_step}}
+  --anomaly-types-json '${{inputs.anomaly_types_json}}'
+  --num-sdg ${{inputs.num_sdg}}
+  --default-spatial-dependency ${{inputs.default_spatial_dependency}}
+  --model-size ${{inputs.model_size}}
+  --min-gpu-memory-gb ${{inputs.min_gpu_memory_gb}}
+
+environment_variables:
+  ACCEPT_EULA: "Y"
+  PRIVACY_CONSENT: "Y"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  KEY_VAULT_URL: https://placeholder.vault.azure.net
+  HF_TOKEN_SECRET_NAME: paidf-hf-token
+  NGC_API_KEY_SECRET_NAME: none
+
+resources:
+  instance_type: h100dedicated

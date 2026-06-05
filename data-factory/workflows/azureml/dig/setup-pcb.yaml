@@ -1,0 +1,43 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: paidf-dig-setup-pcb
+description: DIG PCBA model, raw dataset, and USD asset setup for Azure ML attached AKS compute.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+code: ../../../
+environment:
+  image: nvcr.io/nvidia/paidf-anomalygen:1.0.0
+compute: azureml:k8s-compute
+
+outputs:
+  pcb_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/pcb
+    mode: upload
+  pcb_dataset:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/datasets/pcb/raw
+    mode: upload
+  pcb_assets:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/datasets/pcb/assets
+    mode: upload
+
+command: >-
+  bash workflows/azureml/common/keyvault-env.sh --
+  bash workflows/azureml/dig/run-setup-pcb.sh
+  --model-output ${{outputs.pcb_model}}
+  --dataset-output ${{outputs.pcb_dataset}}
+  --assets-output ${{outputs.pcb_assets}}
+
+environment_variables:
+  ACCEPT_EULA: "Y"
+  PRIVACY_CONSENT: "Y"
+  KEY_VAULT_URL: https://placeholder.vault.azure.net
+  HF_TOKEN_SECRET_NAME: paidf-hf-token
+  NGC_API_KEY_SECRET_NAME: none
+
+resources:
+  instance_type: defaultinstancetype

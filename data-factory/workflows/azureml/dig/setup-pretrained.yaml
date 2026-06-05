@@ -1,0 +1,37 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: paidf-dig-setup-pretrained
+description: DIG pretrained bundle setup for Azure ML attached AKS compute.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+code: ../../../
+environment:
+  image: nvcr.io/nvidia/paidf-anomalygen:1.0.0
+compute: azureml:k8s-compute
+
+inputs:
+  pretrained_model_sizes: 2B
+
+outputs:
+  pretrained_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/pretrained
+    mode: upload
+
+command: >-
+  bash workflows/azureml/common/keyvault-env.sh --
+  bash workflows/azureml/dig/run-setup-pretrained.sh
+  --pretrained-output ${{outputs.pretrained_model}}
+  --model-sizes "${{inputs.pretrained_model_sizes}}"
+
+environment_variables:
+  ACCEPT_EULA: "Y"
+  PRIVACY_CONSENT: "Y"
+  KEY_VAULT_URL: https://placeholder.vault.azure.net
+  HF_TOKEN_SECRET_NAME: paidf-hf-token
+  NGC_API_KEY_SECRET_NAME: none
+
+resources:
+  instance_type: defaultinstancetype
