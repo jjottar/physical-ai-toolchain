@@ -1,5 +1,8 @@
 # OSMO 1.3+ unified control plane chart configuration
 
+global:
+  hostname: "dev.osmo.local"
+
 services:
   ui:
     serviceAccountName: default
@@ -55,6 +58,12 @@ gateway:
   authz:
     enabled: false
   envoy:
+    service:
+      type: ClusterIP
+    ingress:
+      enabled: true
+      ingressClass: azureml-nginx
+      sslEnabled: false
     defaultIdentity:
       user: admin
       roles: osmo-admin

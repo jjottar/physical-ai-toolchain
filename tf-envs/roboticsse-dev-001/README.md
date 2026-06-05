@@ -41,6 +41,19 @@ terraform -chdir=vpn init -reconfigure -backend-config=../../../tf-envs/robotics
 terraform -chdir=vpn apply -var-file=../../../tf-envs/roboticsse-dev-001/terraform.swedencentral.vpn.tfvars
 ```
 
+## 🌐 Deploy DNS Components
+
+Run this after `infrastructure/setup/03-deploy-osmo-control-plane.sh`. That script creates the `azureml-ingress-nginx-internal-lb` service used below.
+
+Deploying the DNS component maps the OSMO hostname to the internal load balancer IP used over the VPN.
+Run the following commands from the `infrastructure/terraform` directory:
+
+```bash
+terraform -chdir=dns init -reconfigure -backend-config=../../../tf-envs/roboticsse-dev-001/dns-backend.hcl
+OSMO_INGRESS_IP=$(kubectl get svc -n azureml azureml-ingress-nginx-internal-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+terraform -chdir=dns apply -var="osmo_loadbalancer_ip=$OSMO_INGRESS_IP" -var-file=../../../tf-envs/roboticsse-dev-001/terraform.swedencentral.dns.tfvars
+```
+
 ## 🗄️ One-Time State Migration
 
 > This migration has already been completed. Do not run it again; it is documented here for reference only.
@@ -62,8 +75,6 @@ OSMO has been updated to version 6.3. To use it:
 1. Install tools if needed: `sudo az aks install-cli`
 1. Connect to AKS: `az aks get-credentials --resource-group rg-roboticsse-dev-001 --name aks-roboticsse-dev-001`
 1. Connect to VPN (if private cluster) and check connectivity `kubectl cluster-info`
-1. In terminal 1, port-forward OSMO service: `kubectl port-forward svc/osmo-gateway 9001:80 -n osmo-control-plane`
-1. Open OSMO dashboard <http://localhost:9001/>
-1. Login with OSMO CLI: `osmo login http://localhost:9001/ --method token --token "$(kubectl get secret osmo-default-admin -n osmo-control-plane -o jsonpath='{.data.password}' | base64 -d)"`
+1. Login with OSMO CLI: `osmo login http://dev.osmo.local/ --method token --token "$(kubectl get secret osmo-default-admin -n osmo-control-plane -o jsonpath='{.data.password}' | base64 -d)"`
 1. List OSMO pools: `osmo pool list`
 1. Submit hello world job: `osmo workflow submit <(curl -fsSL https://raw.githubusercontent.com/NVIDIA/OSMO/refs/heads/main/cookbook/tutorials/hello_world.yaml)`
