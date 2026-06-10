@@ -1,0 +1,45 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: paidf-dig-setup-glass
+description: DIG glass checkpoint and raw dataset setup for Azure ML attached AKS compute.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+code: ../../../
+environment:
+  image: nvcr.io/nvidia/paidf-anomalygen:1.0.0
+compute: azureml:k8s-compute
+
+inputs:
+  glass_zip:
+    type: uri_file
+    path: azureml://datastores/datasets/paths/dig/uploads/glass-zip/mobile_screen.zip
+    mode: download
+
+outputs:
+  glass_model:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/models/glass
+    mode: upload
+  glass_dataset:
+    type: uri_folder
+    path: azureml://datastores/datasets/paths/dig/datasets/glass/raw
+    mode: upload
+
+command: >-
+  bash workflows/azureml/common/keyvault-env.sh --
+  bash workflows/azureml/dig/run-setup-glass.sh
+  --model-output ${{outputs.glass_model}}
+  --dataset-output ${{outputs.glass_dataset}}
+  --glass-zip ${{inputs.glass_zip}}
+
+environment_variables:
+  ACCEPT_EULA: "Y"
+  PRIVACY_CONSENT: "Y"
+  KEY_VAULT_URL: https://placeholder.vault.azure.net
+  HF_TOKEN_SECRET_NAME: paidf-hf-token
+  NGC_API_KEY_SECRET_NAME: none
+
+resources:
+  instance_type: defaultinstancetype

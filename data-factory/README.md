@@ -1,6 +1,6 @@
 ---
 description: Azure ML DIG operator guide for live-validated setup, finetune, and Day 1 manual ROI workflows
-ms.date: 2026-06-05
+ms.date: 2026-06-10
 ms.topic: how-to
 ---
 
@@ -80,18 +80,20 @@ export NGC_API_KEY_SECRET_NAME=none
 export DATA_FACTORY_SOURCE=../physical-ai-data-factory
 export DIG_STORAGE_ACCOUNT=<storage-account>
 export DIG_STORAGE_CONTAINER=datasets
+export DIG_GLASS_ZIP_PATH=dig/uploads/glass-zip/mobile_screen.zip
 ```
 
 Common submitter options:
 
 | Option                      | Purpose                                                                                  |
 |-----------------------------|------------------------------------------------------------------------------------------|
-| `--workflow`                | Selects `setup-pretrained`, `setup-pcb`, `setup-metal`, `finetune`, or `day1-manual-roi` |
-| `--usecase`                 | Selects `pcb` or `metal_surface` where supported                                         |
+| `--workflow`                | Selects `setup-pretrained`, `setup-pcb`, `setup-metal`, `setup-glass`, `finetune`, or `day1-manual-roi` |
+| `--usecase`                 | Selects `pcb`, `metal_surface`, or `glass` where supported                               |
 | `--instance-type`           | Overrides the workflow InstanceType. Use `h100spot` for validated H100 spot execution    |
 | `--datastore`               | Stores generated setup and run artifacts                                                 |
 | `--pretrained-datastore`    | Reads setup-pretrained output or compatible pretrained cache artifacts                    |
-| `--pretrained-storage-root` | Datastore path that contains `models/pretrained`                                         |
+| `--pretrained-storage-root` | Datastore root whose child path is `models/pretrained`                                   |
+| `--glass-zip-path`          | Datastore path to staged `mobile_screen.zip` for `setup-glass`                           |
 | `--storage-root`            | Datastore path for setup outputs or workflow inputs                                      |
 | `--output-prefix`           | Datastore path for run outputs                                                           |
 | `--max-iter`, `--save-iter` | Finetune iteration and checkpoint overrides. `0` keeps the NVIDIA cookbook defaults      |
@@ -126,7 +128,7 @@ Preview, schema-validate, then submit after both checks pass:
 
 ```bash
 job_args=(--workflow day1-manual-roi --usecase pcb --pretrained-datastore datasets)
-job_args+=(--pretrained-storage-root dig/<setup-pretrained-run-root>/models/pretrained)
+job_args+=(--pretrained-storage-root dig/<setup-pretrained-run-root>)
 job_args+=(--storage-root dig/<setup-pcb-run-root>)
 
 data-factory/scripts/submit-azureml-dig.sh "${common_args[@]}" "${job_args[@]}" \
@@ -145,10 +147,11 @@ Run setup workflows before workflow jobs that consume their outputs.
 | 1    | `setup-pretrained` | Finetune Only and Day 1 manual ROI     | `<output-prefix>/models/pretrained`                                         |
 | 2    | `setup-pcb`        | PCB Finetune Only and Day 1 manual ROI | `<output-prefix>/models`, `<output-prefix>/raw_dataset`, `<output-prefix>/assets` |
 | 3    | `setup-metal`      | Metal Day 1 manual ROI                 | `<output-prefix>/models`, `<output-prefix>/raw_dataset`                     |
-| 4    | `finetune`         | PCB fine-tuned AnomalyGen checkpoint   | `<output-prefix>/finetune/finetune`                                         |
-| 5    | `day1-manual-roi`  | Pretrained Day 1 inference             | `<output-prefix>/day1-manual-roi`                                           |
+| 4    | `setup-glass`      | Glass Day 1 manual ROI                 | `<output-prefix>/models/glass`, `<output-prefix>/datasets/glass/raw`        |
+| 5    | `finetune`         | PCB fine-tuned AnomalyGen checkpoint   | `<output-prefix>/finetune/finetune`                                         |
+| 6    | `day1-manual-roi`  | Pretrained Day 1 inference             | `<output-prefix>/day1-manual-roi`                                           |
 
-Run setup workflows in order:
+Run the shared setup workflows before dependent jobs:
 
 ```bash
 for workflow in setup-pretrained setup-pcb setup-metal; do
@@ -157,11 +160,38 @@ for workflow in setup-pretrained setup-pcb setup-metal; do
 done
 ```
 
+Stage the Roboflow Mobile Screen export as `mobile_screen.zip` before running `setup-glass`:
+
+```bash
+az storage fs directory create \
+  --account-name <adls-account> \
+  --file-system datasets \
+  --name dig/uploads/glass-zip \
+  --auth-mode login
+
+az storage fs file upload \
+  --account-name <adls-account> \
+  --file-system datasets \
+  --path dig/uploads/glass-zip/mobile_screen.zip \
+  --source /path/to/mobile_screen.zip \
+  --auth-mode login \
+  --overwrite true
+```
+
+Run glass setup after the zip is staged. Keep the output root separate from the shared setup runs:
+
+```bash
+glass_setup_args=(--workflow setup-glass --usecase glass)
+glass_setup_args+=(--glass-zip-path dig/uploads/glass-zip/mobile_screen.zip)
+glass_setup_args+=(--output-prefix dig/runs/setup-glass-<run-id>)
+data-factory/scripts/submit-azureml-dig.sh "${common_args[@]}" "${glass_setup_args[@]}" --validate-cloud --submit
+```
+
 Run Finetune Only after setup-pretrained and setup-pcb outputs exist:
 
 ```bash
 finetune_args=(--workflow finetune --pretrained-datastore datasets)
-finetune_args+=(--pretrained-storage-root dig/runs/setup-pretrained-<run-id>/models/pretrained)
+finetune_args+=(--pretrained-storage-root dig/runs/setup-pretrained-<run-id>)
 finetune_args+=(--storage-root dig/runs/setup-pcb-<run-id> --output-prefix dig/runs/finetune-<run-id>)
 data-factory/scripts/submit-azureml-dig.sh "${common_args[@]}" "${finetune_args[@]}" --max-iter 2000 --save-iter 2000 --submit
 ```
@@ -170,12 +200,21 @@ Run Day 1 manual ROI after setup outputs exist:
 
 ```bash
 manual_roi_args=(--workflow day1-manual-roi --usecase pcb --pretrained-datastore datasets)
-manual_roi_args+=(--pretrained-storage-root dig/runs/setup-pretrained-<run-id>/models/pretrained)
+manual_roi_args+=(--pretrained-storage-root dig/runs/setup-pretrained-<run-id>)
 manual_roi_args+=(--storage-root dig/runs/setup-pcb-<run-id> --output-prefix dig/runs/day1-manual-roi-<run-id>)
 data-factory/scripts/submit-azureml-dig.sh "${common_args[@]}" "${manual_roi_args[@]}" --submit --stream
 ```
 
 Use `--usecase metal_surface` with `--storage-root` pointing at a completed `setup-metal` output for the validated metal Day 1 manual ROI path.
+
+Use `--usecase glass` with `--storage-root` pointing at a completed `setup-glass` output for the validated glass Day 1 manual ROI path:
+
+```bash
+glass_roi_args=(--workflow day1-manual-roi --usecase glass --pretrained-datastore datasets)
+glass_roi_args+=(--pretrained-storage-root dig/runs/setup-pretrained-<run-id>)
+glass_roi_args+=(--storage-root dig/runs/setup-glass-<run-id> --output-prefix dig/runs/day1-manual-roi-glass-<run-id>)
+data-factory/scripts/submit-azureml-dig.sh "${common_args[@]}" "${glass_roi_args[@]}" --instance-type h100spot --submit --stream
+```
 
 ## 📤 Input Data
 
@@ -192,6 +231,17 @@ az storage fs file list \
   --auth-mode login \
   --query "[?contains(name, 'Cosmos-Predict2-2B-Text2Image/model.pt')].name" \
   -o tsv
+```
+
+Verify the staged glass input before `setup-glass`:
+
+```bash
+az storage fs file show \
+  --account-name <adls-account> \
+  --file-system datasets \
+  --path dig/uploads/glass-zip/mobile_screen.zip \
+  --auth-mode login \
+  --query '{name:name,size:size,isDirectory:isDirectory}'
 ```
 
 ## 🔍 Validation And Artifacts
@@ -230,6 +280,16 @@ az storage fs file list \
   -o tsv
 ```
 
+Day 1 manual ROI output verification checks these files under `<output-prefix>/day1-manual-roi`:
+
+| Artifact                 | Purpose                                      |
+|--------------------------|----------------------------------------------|
+| `artifact_manifest.txt`  | Runtime output manifest                      |
+| `inference/SDG_result.csv` | Generated sample metadata and taxonomy rows |
+| `inference/annotated_image/*.png` | Annotated output previews           |
+| `inference/reconstructed_image/*.png` | Generated reconstructed outputs  |
+| `inference_daft_v3/`     | TAO DAFT conversion output                   |
+
 ## 🧪 Tested Results
 
 Live Azure ML validation on the attached AKS compute proved these paths:
@@ -239,7 +299,8 @@ Live Azure ML validation on the attached AKS compute proved these paths:
 | `setup-pretrained` | Completed and produced Cosmos Predict2 2B pretrained layout in `datasets`                                             |
 | `setup-pcb`        | Completed and produced PCBA checkpoints, raw dataset, and USD assets                                                  |
 | `setup-metal`      | Completed and produced metal checkpoint and raw dataset artifacts                                                     |
-| `day1-manual-roi`  | Completed for PCB and metal paths, with expected TAO DAFT output counts                                               |
+| `setup-glass`      | Completed and produced glass checkpoint and raw Mobile Screen dataset artifacts                                       |
+| `day1-manual-roi`  | Completed for PCB, metal, and glass paths, with expected TAO DAFT output counts                                      |
 | `finetune`         | Completed a bounded PCB run with Key Vault, H100, `/dev/shm`, checkpoint, manifest, and validation-image verification |
 
 ## 🧭 Troubleshooting
@@ -249,6 +310,7 @@ Live Azure ML validation on the attached AKS compute proved these paths:
 | `HF_TOKEN loaded` does not appear in logs                     | Check Key Vault URL, secret name, and `Key Vault Secrets User` permission  |
 | Finetune fails with `/dev/shm` too small                      | Ensure the rendered job includes `resources.shm_size: 32g`                 |
 | Finetune cannot find `Cosmos-Predict2-2B-Text2Image/model.pt` | Use a successful `setup-pretrained` output as `--pretrained-storage-root`  |
+| `setup-glass` cannot find `mobile_screen.zip`                 | Stage the Roboflow Mobile Screen export at `--glass-zip-path`             |
 | Job remains queued on `h100dedicated`                         | Check H100 node-pool scale state, or rerun with `--instance-type h100spot` |
 
 Read focused user logs when Azure ML streaming lags:

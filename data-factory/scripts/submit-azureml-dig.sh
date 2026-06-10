@@ -32,7 +32,7 @@ Preview, validate, or submit live-validated DIG Azure ML command jobs on attache
 
 WORKFLOW:
   -w, --workflow NAME              DIG workflow: setup-pretrained, setup-pcb, setup-metal,
-                    finetune, day1-manual-roi
+                    setup-glass, finetune, day1-manual-roi
                     (default: setup-metal)
         --data-factory-source DIR    physical-ai-data-factory checkout path
         --source-path DIR            Alias for --data-factory-source
@@ -57,9 +57,10 @@ DATA AND SECRETS:
         --pretrained-storage-root PATH
                     Datastore prefix root for cached pretrained inputs
         --cosmos-cache-root PATH      Datastore prefix root for cached Cosmos inputs
+        --glass-zip-path PATH         Datastore path to staged mobile_screen.zip
         --output-prefix PATH         Datastore output prefix or raw Azure storage root (default: dig/runs)
         --run-name NAME              Logical DIG run name for run output paths
-        --usecase NAME               Use case: pcb or metal_surface where supported
+        --usecase NAME               Use case: pcb, metal_surface, or glass where supported
         --checkpoint-step STEP       Checkpoint step for Day 1 manual ROI
         --anomaly-types-json JSON    Defect taxonomy JSON for Day 1 manual ROI
         --num-sdg N                  Number of SDG entries for Day 1 manual ROI (default: 30)
@@ -183,8 +184,8 @@ validate_usecase() {
   local value="$1"
 
   case "$value" in
-    pcb|metal_surface) ;;
-    *) fatal "--usecase must be one of: pcb, metal_surface" ;;
+    pcb|metal_surface|glass) ;;
+    *) fatal "--usecase must be one of: pcb, metal_surface, glass" ;;
   esac
 }
 
@@ -202,6 +203,7 @@ default_usecase_for_workflow() {
   case "$selected_workflow" in
     setup-pcb|finetune) echo "pcb" ;;
     setup-metal|day1-manual-roi) echo "metal_surface" ;;
+    setup-glass) echo "glass" ;;
     setup-pretrained) echo "pcb" ;;
     *) fatal "Unsupported workflow: $selected_workflow" ;;
   esac
@@ -214,6 +216,7 @@ default_run_name_for_workflow() {
     setup-pretrained) echo "setup-pretrained" ;;
     setup-pcb) echo "setup-pcb" ;;
     setup-metal) echo "setup-metal" ;;
+    setup-glass) echo "setup-glass" ;;
     finetune) echo "finetune" ;;
     day1-manual-roi) echo "texture_defect_gen_day1_manual_roi" ;;
     *) fatal "Unsupported workflow: $selected_workflow" ;;
@@ -226,6 +229,7 @@ default_checkpoint_step_for_usecase() {
   case "$value" in
     pcb) echo "14000" ;;
     metal_surface) echo "10000" ;;
+    glass) echo "9000" ;;
     *) fatal "Unsupported usecase: $value" ;;
   esac
 }
@@ -236,6 +240,7 @@ default_anomaly_types_for_usecase() {
   case "$value" in
     pcb) echo '[["passive_component","missing"]]' ;;
     metal_surface) echo '[["metal_surface","MT_Blowhole"],["metal_surface","MT_Break"],["metal_surface","MT_Crack"],["metal_surface","MT_Fray"],["metal_surface","MT_Uneven"]]' ;;
+    glass) echo '[["Phone","oil"],["Phone","scratch"],["Phone","stain"]]' ;;
     *) fatal "Unsupported usecase: $value" ;;
   esac
 }
@@ -428,6 +433,11 @@ validate_source_inventory() {
       require_path "$dig_root/assets/configs/setup/setup_metal.yaml" "DIG setup-metal workflow config"
       require_path "$dig_root/references/setup.md" "DIG setup reference"
       ;;
+    setup-glass)
+      require_path "$dig_root/assets/configs/setup/setup_glass.yaml" "DIG setup-glass workflow config"
+      require_path "$dig_root/references/setup.md" "DIG setup reference"
+      require_path "$source_root/docs/workflows/physical-ai-defect-image-generation/media/glass_dataset_download_instructions.md" "DIG glass dataset instructions"
+      ;;
     finetune)
       require_path "$dig_root/assets/configs/finetune.yaml" "DIG finetune workflow config"
       require_path "$dig_root/references/flows/finetune.md" "DIG finetune flow reference"
@@ -462,6 +472,9 @@ validate_local_assets() {
     setup-metal)
       require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/run-setup-metal.sh" "setup-metal runner"
       ;;
+    setup-glass)
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/run-setup-glass.sh" "setup-glass runner"
+      ;;
     finetune)
       require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/run-finetune.sh" "finetune runner"
       ;;
@@ -483,8 +496,10 @@ render_job_file() {
   local model_size_value="${23}" num_gpus_value="${24}" min_gpu_memory_gb_value="${25}"
   local max_iter_value="${26}" save_iter_value="${27}" use_pretrained_checkpoint_value="${28}"
   local pretrained_model_sizes_value="${29}"
-  local usecase_model_uri raw_dataset_uri pcb_assets_uri pretrained_output_uri pretrained_uri cosmos_cache_uri results_uri
+  local glass_zip_path="${30}"
+  local usecase_model_uri raw_dataset_uri pcb_assets_uri pretrained_output_uri pretrained_uri cosmos_cache_uri glass_zip_uri results_uri
   local rendered_ngc_secret_name="${ngc_secret_name:-none}"
+  local code_path="$REPO_ROOT/data-factory"
 
   usecase_model_uri="$(azureml_uri "$datastore_name" "$storage_root_path/models/$selected_usecase")"
   raw_dataset_uri="$(azureml_uri "$datastore_name" "$storage_root_path/datasets/$selected_usecase/raw")"
@@ -492,6 +507,7 @@ render_job_file() {
   pretrained_output_uri="$(azureml_uri "$datastore_name" "$storage_root_path/models/pretrained")"
   pretrained_uri="$(azureml_uri "$pretrained_datastore_name" "$pretrained_storage_root_path/models/pretrained")"
   cosmos_cache_uri="$(azureml_uri "$cosmos_cache_datastore_name" "$cosmos_cache_root_path")"
+  glass_zip_uri="$(azureml_uri "$datastore_name" "$glass_zip_path")"
   case "$selected_workflow" in
     finetune) results_uri="$(azureml_uri "$datastore_name" "$output_prefix_path/$run_output_name/finetune")" ;;
     day1-manual-roi) results_uri="$(azureml_uri "$datastore_name" "$output_prefix_path/$run_output_name/day1-manual-roi")" ;;
@@ -513,6 +529,7 @@ render_job_file() {
     -v save_iter_value="$save_iter_value" \
     -v use_pretrained_checkpoint_value="$use_pretrained_checkpoint_value" \
     -v pretrained_model_sizes_value="$pretrained_model_sizes_value" \
+    -v code_path="$code_path" \
     -v compute_name="azureml:${compute_name}" \
     -v instance_type_name="$instance_type_name" \
     -v image_reference="$image_reference" \
@@ -525,8 +542,13 @@ render_job_file() {
     -v pretrained_output_uri="$pretrained_output_uri" \
     -v pretrained_uri="$pretrained_uri" \
     -v cosmos_cache_uri="$cosmos_cache_uri" \
+    -v glass_zip_uri="$glass_zip_uri" \
     -v results_uri="$results_uri" '
       BEGIN { quote = sprintf("%c", 39) }
+      /^code:/ {
+        print "code: " code_path
+        next
+      }
       /^environment:/ {
         print "environment:"
         print "  image: " image_reference
@@ -561,12 +583,16 @@ render_job_file() {
         }
         next
       }
-      /path: azureml:\/\/datastores\/datasets\/paths\/dig\/models\/(metal_surface|pcb)/ {
+      /path: azureml:\/\/datastores\/datasets\/paths\/dig\/models\/(metal_surface|pcb|glass)/ {
         print "    path: " usecase_model_uri
         next
       }
-      /path: azureml:\/\/datastores\/datasets\/paths\/dig\/datasets\/(metal_surface|pcb)\/raw/ {
+      /path: azureml:\/\/datastores\/datasets\/paths\/dig\/datasets\/(metal_surface|pcb|glass)\/raw/ {
         print "    path: " raw_dataset_uri
+        next
+      }
+      /path: azureml:\/\/datastores\/datasets\/paths\/dig\/uploads\/glass-zip\/mobile_screen.zip/ {
+        print "    path: " glass_zip_uri
         next
       }
       /path: azureml:\/\/datastores\/datasets\/paths\/dig\/datasets\/pcb\/assets/ {
@@ -700,6 +726,11 @@ print_artifact_expectations() {
       print_kv "Expected Outputs" "models/metal_surface, datasets/metal_surface/raw"
       print_kv "Required Evidence" "ag_config.yaml, iter_*.pt, defect_spec.jsonl, non-empty raw data"
       ;;
+    setup-glass)
+      print_kv "Expected Outputs" "models/glass, datasets/glass/raw"
+      print_kv "Required Input" "uploads/glass-zip/mobile_screen.zip"
+      print_kv "Required Evidence" "ag_config.yaml, iter_*.pt, defect_spec.jsonl, Phone dataset tree, artifact_manifest.txt"
+      ;;
     finetune)
       print_kv "Expected Output" "runs/$selected_run_name/finetune"
       print_kv "Required Evidence" "validation.jsonl, best_step.txt, iter_*.pt, artifact_manifest.txt"
@@ -810,6 +841,7 @@ raw_storage_container="${DIG_STORAGE_CONTAINER:-${AZURE_STORAGE_CONTAINER:-}}"
 storage_root="${DIG_STORAGE_ROOT:-dig}"
 pretrained_storage_root="${DIG_PRETRAINED_STORAGE_ROOT:-}"
 cosmos_cache_root="${DIG_COSMOS_CACHE_ROOT:-data/models/cosmos_transfer/hub/models--nvidia--Cosmos-Predict2.5-2B/snapshots/f176dc95b4a70f53ce01c4b302851595e7322b00}"
+glass_zip_path="${DIG_GLASS_ZIP_PATH:-dig/uploads/glass-zip/mobile_screen.zip}"
 output_prefix="${DIG_OUTPUT_PREFIX:-dig/runs}"
 run_name="${DIG_RUN_NAME:-}"
 usecase="${DIG_USECASE:-}"
@@ -859,6 +891,7 @@ while [[ $# -gt 0 ]]; do
     --storage-root)                      storage_root="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --pretrained-storage-root)           pretrained_storage_root="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --cosmos-cache-root)                 cosmos_cache_root="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --glass-zip-path)                    glass_zip_path="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --output-prefix)                     output_prefix="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --run-name)                          run_name="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --usecase)                           usecase="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
@@ -907,11 +940,21 @@ workspace_name="${workspace_name:-$(get_azureml_workspace)}"
 compute="${compute:-$(get_compute_target)}"
 hf_secret_name="$(normalize_optional_secret_name "$hf_secret_name")"
 ngc_secret_name="$(normalize_optional_secret_name "$ngc_secret_name")"
+raw_storage_paths=("$storage_root" "$output_prefix")
+if [[ "$workflow" == "setup-glass" ]]; then
+  raw_storage_paths+=("$glass_zip_path")
+fi
 IFS=$'\t' read -r raw_storage_account raw_storage_container < <(
-  resolve_raw_storage_authority "$raw_storage_account" "$raw_storage_container" "$storage_root" "$output_prefix"
+  resolve_raw_storage_authority "$raw_storage_account" "$raw_storage_container" "${raw_storage_paths[@]}"
 )
 storage_root="$(normalize_datastore_path "$storage_root" "$raw_storage_account" "$raw_storage_container")"
 output_prefix="$(normalize_datastore_path "$output_prefix" "$raw_storage_account" "$raw_storage_container")"
+if [[ "$workflow" == "setup-glass" ]]; then
+  glass_zip_path="$(normalize_datastore_path "$glass_zip_path" "$raw_storage_account" "$raw_storage_container")"
+else
+  glass_zip_path="dig/uploads/glass-zip/mobile_screen.zip"
+fi
+unset raw_storage_paths
 pretrained_datastore="${pretrained_datastore:-$datastore}"
 pretrained_storage_root="${pretrained_storage_root:-$storage_root}"
 pretrained_storage_root="$(normalize_datastore_path "$pretrained_storage_root" "" "")"
@@ -942,6 +985,10 @@ case "$workflow" in
     job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/setup-metal.yaml}"
     instance_type="${instance_type:-defaultinstancetype}"
     ;;
+  setup-glass)
+    job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/setup-glass.yaml}"
+    instance_type="${instance_type:-defaultinstancetype}"
+    ;;
   finetune)
     job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/finetune.yaml}"
     instance_type="${instance_type:-h100dedicated}"
@@ -951,7 +998,7 @@ case "$workflow" in
     instance_type="${instance_type:-h100dedicated}"
     ;;
   *)
-    fatal "Unsupported workflow: $workflow (use: setup-pretrained, setup-pcb, setup-metal, finetune, day1-manual-roi)"
+    fatal "Unsupported workflow: $workflow (use: setup-pretrained, setup-pcb, setup-metal, setup-glass, finetune, day1-manual-roi)"
     ;;
 esac
 
@@ -989,7 +1036,7 @@ render_job_file "$workflow" "$job_file" "$rendered_job_file" "$compute" "$instan
   "$pretrained_datastore" "$pretrained_storage_root" "$cosmos_cache_datastore" "$cosmos_cache_root" \
   "$usecase" "$run_name" "$checkpoint_step" "$anomaly_types_json" "$num_sdg" "$default_spatial_dependency" \
   "$model_size" "$num_gpus" "$min_gpu_memory_gb" "$max_iter" "$save_iter" "$use_pretrained_checkpoint" \
-  "$pretrained_model_sizes"
+  "$pretrained_model_sizes" "$glass_zip_path"
 validate_rendered_job "$rendered_job_file"
 write_rendered_job_output "$rendered_job_file" "$rendered_job_output"
 
@@ -1013,6 +1060,7 @@ if [[ "$config_preview" == "true" ]]; then
   print_kv "Storage Root" "$storage_root"
   print_kv "Pretrained Storage Root" "$pretrained_storage_root"
   print_kv "Cosmos Cache Root" "$cosmos_cache_root"
+  print_kv "Glass Zip Path" "$glass_zip_path"
   print_kv "Output Prefix" "$output_prefix"
   print_kv "Run Name" "$run_name"
   print_kv "Use Case" "$usecase"
