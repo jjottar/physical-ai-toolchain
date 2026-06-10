@@ -1,0 +1,123 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+display_name: paidf-dig-day1-real-photo-alignment
+description: DIG Day 1 PCBA real-photo alignment pipeline with usd2roi registration and AnomalyGen inference.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+settings:
+  default_compute: __COMPUTE__
+
+inputs:
+  pcb_assets:
+    type: uri_folder
+    path: __PCB_ASSETS_URI__
+    mode: download
+  raw_dataset:
+    type: uri_folder
+    path: __RAW_DATASET_URI__
+    mode: download
+  pretrained_model:
+    type: uri_folder
+    path: __PRETRAINED_URI__
+    mode: download
+  usecase_model:
+    type: uri_folder
+    path: __USECASE_MODEL_URI__
+    mode: download
+  run_name: __RUN_NAME__
+  usecase: pcb
+  board: __BOARD__
+  scene_filename: __SCENE_FILENAME__
+  real_image_filename: __REAL_IMAGE_FILENAME__
+  checkpoint_step: "__CHECKPOINT_STEP__"
+  anomaly_types_json: "__ANOMALY_TYPES_JSON__"
+  num_sdg: "__NUM_SDG__"
+  default_spatial_dependency: __DEFAULT_SPATIAL_DEPENDENCY__
+  min_gpu_memory_gb: "__MIN_GPU_MEMORY_GB__"
+
+outputs:
+  usd2roi_day1:
+    type: uri_folder
+    path: __USD2ROI_DAY1_URI__
+    mode: upload
+  anomaly:
+    type: uri_folder
+    path: __ANOMALY_URI__
+    mode: upload
+
+jobs:
+  usd2roi_day1:
+    type: command
+    display_name: paidf-dig-day1-real-alignment-usd2roi
+    code: ../../../../
+    environment:
+      image: __SIMULATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      pcb_assets: ${{parent.inputs.pcb_assets}}
+      board: ${{parent.inputs.board}}
+      scene_filename: ${{parent.inputs.scene_filename}}
+      real_image_filename: ${{parent.inputs.real_image_filename}}
+    outputs:
+      usd2roi_day1: ${{parent.outputs.usd2roi_day1}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-usd2roi-day1-real-alignment.sh
+      --pcb-assets ${{inputs.pcb_assets}}
+      --output-dir ${{outputs.usd2roi_day1}}
+      --board ${{inputs.board}}
+      --scene-filename ${{inputs.scene_filename}}
+      --real-image-filename ${{inputs.real_image_filename}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      NVIDIA_DRIVER_CAPABILITIES: all
+      DIG_AML_KIT_TIMEOUT_SECONDS: "1200"
+    resources:
+      shm_size: 32g
+      instance_type: __INSTANCE_TYPE__
+
+  anomaly_infer:
+    type: command
+    display_name: paidf-dig-day1-real-alignment-anomaly-infer
+    code: ../../../../
+    environment:
+      image: __ANOMALYGEN_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      raw_dataset: ${{parent.inputs.raw_dataset}}
+      pretrained_model: ${{parent.inputs.pretrained_model}}
+      usecase_model: ${{parent.inputs.usecase_model}}
+      aligned_rois: ${{parent.jobs.usd2roi_day1.outputs.usd2roi_day1}}
+      run_name: ${{parent.inputs.run_name}}
+      checkpoint_step: ${{parent.inputs.checkpoint_step}}
+      anomaly_types_json: ${{parent.inputs.anomaly_types_json}}
+      num_sdg: ${{parent.inputs.num_sdg}}
+      default_spatial_dependency: ${{parent.inputs.default_spatial_dependency}}
+      min_gpu_memory_gb: ${{parent.inputs.min_gpu_memory_gb}}
+    outputs:
+      anomaly: ${{parent.outputs.anomaly}}
+    command: >-
+      bash workflows/azureml/common/keyvault-env.sh --
+      bash workflows/azureml/dig/stages/run-day1-pcb-anomaly-infer.sh
+      --raw-dataset ${{inputs.raw_dataset}}
+      --pretrained-model ${{inputs.pretrained_model}}
+      --usecase-model ${{inputs.usecase_model}}
+      --aligned-rois ${{inputs.aligned_rois}}
+      --output-dir ${{outputs.anomaly}}
+      --name ${{inputs.run_name}}
+      --checkpoint-step ${{inputs.checkpoint_step}}
+      --anomaly-types-json '${{inputs.anomaly_types_json}}'
+      --num-sdg ${{inputs.num_sdg}}
+      --default-spatial-dependency ${{inputs.default_spatial_dependency}}
+      --min-gpu-memory-gb ${{inputs.min_gpu_memory_gb}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      KEY_VAULT_URL: "__KEY_VAULT_URL__"
+      HF_TOKEN_SECRET_NAME: "__HF_SECRET_NAME__"
+      NGC_API_KEY_SECRET_NAME: "__NGC_SECRET_NAME__"
+    resources:
+      instance_type: __INSTANCE_TYPE__

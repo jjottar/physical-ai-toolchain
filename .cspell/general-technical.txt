@@ -346,6 +346,7 @@ deduplication
 Deepset
 defaultazurecredential
 defaultinstancetype
+denoiser
 deidentification
 deis
 delimited
@@ -850,6 +851,7 @@ nunit
 nvarchar
 nvas
 nvcr
+nvoptix
 nvidia
 nvme
 nvml
@@ -898,8 +900,10 @@ operationalizing
 opex
 opinsights
 Opsgenie
+Opti
 optimised
 optimising
+optix
 oracle
 oras
 orc
@@ -936,6 +940,7 @@ passcodes
 passwordless
 pasteable
 pathlib
+pathtracing
 pbmm
 pdbs
 pdfs
@@ -1143,9 +1148,11 @@ rlhf
 rmem
 roadmap
 roadmaps
+Roboflow
 roadrunner
 rollout
 rollouts
+rois
 rosbag
 routable
 rootfs
@@ -1207,6 +1214,7 @@ shardings
 shards
 shellcheck
 showbacks
+sideflip
 siem
 sigalrm
 signalr
@@ -1286,6 +1294,7 @@ subcomponent
 subcomponents
 subfolders
 submillisecond
+submask
 submittext
 subnetting
 subnetworks
@@ -1447,6 +1456,7 @@ uuid
 uvicorn
 varchar
 vaultcore
+vantablack
 vcenter
 vcore
 vcores
@@ -1538,6 +1548,7 @@ xlong
 xlsx
 xml
 xunit
+xform
 xyxy
 yaml
 YARA
