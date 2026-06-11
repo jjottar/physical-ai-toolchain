@@ -1341,6 +1341,13 @@ render_job_file "$workflow" "$job_file" "$rendered_job_file" "$compute" "$instan
 validate_rendered_job "$rendered_job_file"
 write_rendered_job_output "$rendered_job_file" "$rendered_job_output"
 
+if [[ "$config_preview" == "true" && ( "$validate_cloud" == "true" || "$submit_requested" == "true" ) ]]; then
+  section "Read-Only Cloud Validation"
+  validate_cloud_state "$subscription_id" "$resource_group" "$workspace_name" "$compute" \
+    "$instance_type" "$datastore" "$key_vault_url" "$hf_secret_name" "$ngc_secret_name" "$image" \
+    "$pretrained_datastore" "$cosmos_cache_datastore"
+fi
+
 if [[ "$config_preview" == "true" ]]; then
   section "Configuration Preview"
   print_kv "Workflow" "$workflow"

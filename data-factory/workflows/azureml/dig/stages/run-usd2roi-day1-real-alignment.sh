@@ -50,6 +50,9 @@ require_file "$paidf_root/scripts/usd2roi/usd2roi_register.py" "usd2roi_register
 require_file "$paidf_root/scripts/usd2roi/usd2roi_crop.py" "usd2roi_crop.py"
 [[ -n "$(find_first_file "$pcb_assets" "$scene_filename")" ]] || \
   fatal "scene_filename=$scene_filename not found under $pcb_assets"
+[[ -n "$real_image_filename" ]] || fatal "--real-image-filename is required"
+[[ "$real_image_filename" != /* && "$real_image_filename" != *".."* && "$real_image_filename" != *"//"* ]] || \
+  fatal "--real-image-filename must be relative and remain under the PCBA assets root"
 if [[ -f "$pcb_assets/$real_image_filename" ]]; then
   info "real image found: $pcb_assets/$real_image_filename"
 else

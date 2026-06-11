@@ -4,7 +4,7 @@ diff --git a/skills/physical-ai-video-data-augmentation/scripts/preflight_creden
 @@ -218,11 +218,11 @@ probe_nvcr_image_ref() {
      local service=""
      local scope=""
- 
+
 -    challenge="$(awk 'BEGIN{IGNORECASE=1} /^Www-Authenticate:/ {sub(/\r$/, ""); print substr($0, index($0,":")+2); exit}' "${headers_file}")"
 +    challenge="$(awk 'tolower($0) ~ /^www-authenticate:/ {sub(/\r$/, ""); print substr($0, index($0,":")+2); exit}' "${headers_file}")"
      realm="$(printf '%s' "${challenge}" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')"
@@ -14,13 +14,13 @@ diff --git a/skills/physical-ai-video-data-augmentation/scripts/preflight_creden
 +    if [[ -z "${realm}" || -z "${scope}" ]]; then
        return 1
      fi
- 
+
 @@ -236,25 +236,21 @@ probe_nvcr_image_ref() {
      local use_basic_auth="$4"
      local token_payload=""
      local bearer_token=""
 +    local -a curl_args=()
- 
+
 -    if [[ "${use_basic_auth}" == "true" ]]; then
 -      token_payload="$(curl -sS --get \
 -        -u '$oauthtoken'"":"${NGC_API_KEY}" \
@@ -52,6 +52,6 @@ diff --git a/skills/physical-ai-video-data-augmentation/scripts/preflight_creden
 +      printf '%s' ""
 +      return
 +    }
- 
+
      bearer_token="$(printf '%s' "${token_payload}" | tr -d '\n' | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
      if [[ -z "${bearer_token}" ]]; then
