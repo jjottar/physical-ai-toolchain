@@ -1,0 +1,43 @@
+data:
+  - inputs:
+      rgb: "/app/data/ovsl2sl/input.jpg"
+    output:
+      video: "/app/data/ovsl2sl/output/output.jpg"
+      caption: "/app/data/ovsl2sl/output/output.txt"
+      metadata: "/app/data/ovsl2sl/output/metadata.json"
+
+endpoints:
+  image_edit:
+    url: "http://localhost:8000/v1"
+    model: "nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL"
+
+pipeline:
+  retry: 3
+  regenerate_caption_on_retry: false
+  logging:
+    enabled: true
+    level: "INFO"
+
+captioning:
+  llm:
+    text: |
+      Render this PCB component crop in the style of an NVPCB raked-solder-light
+      photograph: dark reddish board with bright orange-red and blue specular
+      highlights on the solder pads, photorealistic textures.
+
+augmentation:
+  model:
+    name: "image-edit"
+    executor_type: "gradio"
+  parameters:
+    num_inference_steps: 30
+    guidance_scale: 4.0
+    seed: 0
+
+data_processing:
+  alignment:
+    rot_range_deg: [-1.0, 1.0, 0.1]
+    shift_step: 2
+    bins: 64
+    interp: bilinear
+    no_resize: true

@@ -1,0 +1,92 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+display_name: paidf-dig-day0-good-image
+description: DIG Day 0 PCBA clean-image pipeline with usd2roi and image-edit stages.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+settings:
+  default_compute: __COMPUTE__
+
+inputs:
+  pcb_assets:
+    type: uri_folder
+    path: __PCB_ASSETS_URI__
+    mode: download
+  run_name: __RUN_NAME__
+  board: __BOARD__
+  scene_filename: __SCENE_FILENAME__
+  render_patches: "__RENDER_PATCHES__"
+  crop_max_emit: "__CROP_MAX_EMIT__"
+  image_edit_endpoint: __IMAGE_EDIT_ENDPOINT__
+  image_edit_model: __IMAGE_EDIT_MODEL__
+
+outputs:
+  usd2roi_components:
+    type: uri_folder
+    path: __USD2ROI_COMPONENTS_URI__
+    mode: upload
+  augment:
+    type: uri_folder
+    path: __AUGMENT_URI__
+    mode: upload
+
+jobs:
+  usd2roi_render:
+    type: command
+    display_name: paidf-dig-day0-good-usd2roi
+    code: ../../../../
+    environment:
+      image: __SIMULATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      pcb_assets: ${{parent.inputs.pcb_assets}}
+      board: ${{parent.inputs.board}}
+      scene_filename: ${{parent.inputs.scene_filename}}
+      render_patches: ${{parent.inputs.render_patches}}
+      crop_max_emit: ${{parent.inputs.crop_max_emit}}
+    outputs:
+      usd2roi_components: ${{parent.outputs.usd2roi_components}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-usd2roi-day0.sh
+      --pcb-assets ${{inputs.pcb_assets}}
+      --output-dir ${{outputs.usd2roi_components}}
+      --board ${{inputs.board}}
+      --scene-filename ${{inputs.scene_filename}}
+      --render-patches ${{inputs.render_patches}}
+      --crop-max-emit ${{inputs.crop_max_emit}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      NVIDIA_DRIVER_CAPABILITIES: all
+      DIG_AML_KIT_TIMEOUT_SECONDS: "1200"
+    resources:
+      shm_size: 32g
+      instance_type: __INSTANCE_TYPE__
+
+  image_edit:
+    type: command
+    display_name: paidf-dig-day0-good-image-edit
+    code: ../../../../
+    environment:
+      image: __AUGMENTATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      usd2roi_components: ${{parent.jobs.usd2roi_render.outputs.usd2roi_components}}
+      image_edit_endpoint: ${{parent.inputs.image_edit_endpoint}}
+      image_edit_model: ${{parent.inputs.image_edit_model}}
+    outputs:
+      augment: ${{parent.outputs.augment}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-image-edit.sh
+      --input-dir ${{inputs.usd2roi_components}}
+      --output-dir ${{outputs.augment}}
+      --image-edit-endpoint ${{inputs.image_edit_endpoint}}
+      --image-edit-model ${{inputs.image_edit_model}}
+      --layout day0-roi
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+    resources:
+      instance_type: __INSTANCE_TYPE__

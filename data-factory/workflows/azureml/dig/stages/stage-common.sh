@@ -217,11 +217,18 @@ find_first_file() {
 }
 
 validate_image_edit_model() {
-  local endpoint="$1" expected_model="$2" models_url response
+  local endpoint="$1" expected_model="$2" models_url response ready_timeout_seconds retry_interval_seconds start_time elapsed_seconds
 
   [[ "$expected_model" == "nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL" ]] || \
     fatal "image-edit model must be nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL"
   require_command curl
+
+  ready_timeout_seconds="${IMAGE_EDIT_READY_TIMEOUT_SECONDS:-1800}"
+  retry_interval_seconds="${IMAGE_EDIT_READY_INTERVAL_SECONDS:-30}"
+  [[ "$ready_timeout_seconds" =~ ^[0-9]+$ && "$ready_timeout_seconds" -gt 0 ]] || \
+    fatal "IMAGE_EDIT_READY_TIMEOUT_SECONDS must be a positive integer"
+  [[ "$retry_interval_seconds" =~ ^[0-9]+$ && "$retry_interval_seconds" -gt 0 ]] || \
+    fatal "IMAGE_EDIT_READY_INTERVAL_SECONDS must be a positive integer"
 
   models_url="${endpoint%/}"
   case "$models_url" in
@@ -230,20 +237,19 @@ validate_image_edit_model() {
     *) models_url="$models_url/v1/models" ;;
   esac
 
-  response=$(curl --silent --show-error --fail "$models_url") || \
-    fatal "Unable to query image-edit endpoint models at $models_url"
-  RESPONSE_JSON="$response" EXPECTED_MODEL="$expected_model" python3 - <<'PY'
-import json
-import os
-import sys
+  info "Waiting for image-edit endpoint model identity at $models_url"
+  start_time=$(date +%s)
+  while true; do
+    response=$(curl --silent --show-error --fail --max-time 30 "$models_url" 2>/dev/null || true)
+    if printf '%s' "$response" | grep -Fq "$expected_model"; then
+      break
+    fi
 
-payload = json.loads(os.environ["RESPONSE_JSON"])
-expected = os.environ["EXPECTED_MODEL"]
-models = payload.get("data", [])
-ids = {item.get("id") for item in models if isinstance(item, dict)}
-if expected not in ids:
-    sys.stderr.write(f"ERROR: endpoint did not advertise {expected}; found {sorted(ids)}\n")
-    sys.exit(1)
-PY
+    elapsed_seconds=$(($(date +%s) - start_time))
+    [[ "$elapsed_seconds" -lt "$ready_timeout_seconds" ]] || \
+      fatal "image-edit endpoint did not advertise $expected_model within ${ready_timeout_seconds}s"
+    info "image-edit endpoint not ready after ${elapsed_seconds}s; retrying in ${retry_interval_seconds}s"
+    sleep "$retry_interval_seconds"
+  done
   info "image-edit endpoint model identity verified: $expected_model"
 }

@@ -37,11 +37,21 @@ EOF
 json_value() {
   local key="$1"
 
-  python3 -c 'import json, sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$key"
+  "$PYTHON_BIN" -c 'import json, sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$key"
 }
 
 url_encode() {
-  python3 -c 'import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+  "$PYTHON_BIN" -c 'import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+resolve_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+  elif command -v python >/dev/null 2>&1; then
+    command -v python
+  else
+    fatal "Missing required tool: python or python3"
+  fi
 }
 
 looks_like_secret_value() {
@@ -93,7 +103,7 @@ get_access_token_with_federated_identity() {
       --data-urlencode "client_assertion=${assertion}") || return 1
   else
     token_response=$(
-      CLIENT_ASSERTION="$assertion" python3 - <<'PY'
+      CLIENT_ASSERTION="$assertion" "$PYTHON_BIN" - <<'PY'
 import os
 import urllib.parse
 import urllib.request
@@ -140,7 +150,7 @@ get_access_token_with_msi_endpoint() {
       "$token_url") || return 1
   else
     token_response=$(
-      MSI_TOKEN_URL="$token_url" python3 - <<'PY'
+      MSI_TOKEN_URL="$token_url" "$PYTHON_BIN" - <<'PY'
 import os
 import urllib.request
 
@@ -172,7 +182,7 @@ get_access_token_with_imds() {
       "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net${client_query}") || return 1
   else
     token_response=$(
-      IMDS_CLIENT_QUERY="$client_query" python3 - <<'PY'
+      IMDS_CLIENT_QUERY="$client_query" "$PYTHON_BIN" - <<'PY'
 import os
 import urllib.request
 
@@ -212,7 +222,7 @@ fetch_secret() {
   else
     secret_response=$(
       KEY_VAULT_REQUEST_URL="${key_vault_url%/}/secrets/${secret_name}?api-version=7.4" \
-        KEY_VAULT_ACCESS_TOKEN="$access_token" python3 - <<'PY'
+        KEY_VAULT_ACCESS_TOKEN="$access_token" "$PYTHON_BIN" - <<'PY'
 import os
 import urllib.request
 
@@ -241,7 +251,7 @@ done
 [[ $# -gt 0 ]] || fatal "Workload command is required after --"
 command=("$@")
 
-command -v python3 >/dev/null 2>&1 || fatal "Missing required tool: python3"
+PYTHON_BIN="$(resolve_python)"
 
 key_vault_url="${KEY_VAULT_URL:-}"
 hf_secret_name="$(normalize_optional_secret_name "${HF_TOKEN_SECRET_NAME:-}")"

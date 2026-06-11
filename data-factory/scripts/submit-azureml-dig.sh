@@ -32,7 +32,8 @@ Preview, validate, or submit live-validated DIG Azure ML command jobs on attache
 
 WORKFLOW:
   -w, --workflow NAME              DIG workflow: setup-pretrained, setup-pcb, setup-metal,
-                    setup-glass, finetune, day1-manual-roi
+                    setup-glass, finetune, day1-manual-roi, day0-texture-defects,
+                    day0-good-image, day0-structural-defects, day1-real-photo-alignment
                     (default: setup-metal)
         --data-factory-source DIR    physical-ai-data-factory checkout path
         --source-path DIR            Alias for --data-factory-source
@@ -66,6 +67,15 @@ DATA AND SECRETS:
         --num-sdg N                  Number of SDG entries for Day 1 manual ROI (default: 30)
         --default-spatial-dependency MODE
                     Spatial fallback for Day 1: free, text, cad (default: free)
+        --board NAME                 PCBA cookbook board for Day 0/Day 1 real-photo pipelines
+        --scene-filename NAME        PCBA USD scene filename for Day 0/Day 1 real-photo pipelines
+        --real-image-filename NAME   Real-photo image filename for Day 1 real-photo alignment
+        --render-patches N           Render patch cap for Day 0 pipelines (default: 5)
+        --crop-max-emit N|null       Day 0 crop cap (default: null)
+        --defect-modes MODES         Structural modes: all or comma-separated subset
+        --crop-offset N              Structural crop padding (default: 10)
+        --image-edit-endpoint URL    OpenAI-compatible Qwen Image-Edit endpoint
+        --image-edit-model MODEL     Exact Image-Edit model ID
         --model-size SIZE            AnomalyGen model size for Day 1: 2b or 14b (default: 2b)
         --num-gpus N                 GPU count for finetune jobs (default: 1)
         --min-gpu-memory-gb N        Minimum GPU memory preflight for GPU jobs (default: 40)
@@ -84,6 +94,8 @@ DATA AND SECRETS:
 
 JOB ASSETS:
         --image IMAGE                AnomalyGen image reference (default: nvcr.io/nvidia/paidf-anomalygen:1.0.0)
+        --simulation-image IMAGE     PAIDF simulation image for pipeline stages
+        --augmentation-image IMAGE   PAIDF augmentation image for Image-Edit stages
         --rendered-job-output PATH   Write the rendered Azure ML commandJob YAML to PATH
         --assets-only                Render and validate local assets without cloud calls or submission
         --validate-cloud             Run read-only Azure ML, Key Vault, datastore, and InstanceType checks
@@ -180,6 +192,12 @@ validate_image_reference() {
   [[ "$value" != *"${raw_storage_prefix}/"* ]] || fatal "--image must not contain raw storage paths"
 }
 
+validate_http_url() {
+  local option_name="$1" value="$2"
+
+  [[ "$value" =~ ^https?://[^[:space:]]+$ ]] || fatal "$option_name must be an http(s) URL"
+}
+
 validate_usecase() {
   local value="$1"
 
@@ -189,6 +207,7 @@ validate_usecase() {
   esac
 }
 
+# shellcheck disable=SC2329
 validate_relative_path_value() {
   local option_name="$1" value="$2"
 
@@ -201,7 +220,7 @@ default_usecase_for_workflow() {
   local selected_workflow="$1"
 
   case "$selected_workflow" in
-    setup-pcb|finetune) echo "pcb" ;;
+    setup-pcb|finetune|day0-texture-defects|day0-good-image|day0-structural-defects|day1-real-photo-alignment) echo "pcb" ;;
     setup-metal|day1-manual-roi) echo "metal_surface" ;;
     setup-glass) echo "glass" ;;
     setup-pretrained) echo "pcb" ;;
@@ -219,6 +238,10 @@ default_run_name_for_workflow() {
     setup-glass) echo "setup-glass" ;;
     finetune) echo "finetune" ;;
     day1-manual-roi) echo "texture_defect_gen_day1_manual_roi" ;;
+    day0-texture-defects) echo "texture_defect_gen_day0" ;;
+    day0-good-image) echo "good_image_gen_day0" ;;
+    day0-structural-defects) echo "structural_defect_gen_day0" ;;
+    day1-real-photo-alignment) echo "texture_defect_gen_day1_real_alignment" ;;
     *) fatal "Unsupported workflow: $selected_workflow" ;;
   esac
 }
@@ -248,7 +271,20 @@ default_anomaly_types_for_usecase() {
 default_anomaly_types_for_workflow() {
   local selected_workflow="$1" selected_usecase="$2"
 
-  default_anomaly_types_for_usecase "$selected_usecase"
+  case "$selected_workflow" in
+    day0-texture-defects) echo '[["IC","bridge"],["passive_component","excess_solder"],["passive_component","missing"]]' ;;
+    day1-real-photo-alignment) echo '[["passive_component","excess_solder"],["passive_component","missing"]]' ;;
+    *) default_anomaly_types_for_usecase "$selected_usecase" ;;
+  esac
+}
+
+is_pipeline_workflow() {
+  local selected_workflow="$1"
+
+  case "$selected_workflow" in
+    day0-texture-defects|day0-good-image|day0-structural-defects|day1-real-photo-alignment) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 normalize_bool() {
@@ -269,6 +305,15 @@ validate_json_value() {
     fatal "$option_name must be valid JSON"
 }
 
+validate_relative_asset_path() {
+  local option_name="$1" value="$2"
+
+  [[ -n "$value" ]] || fatal "$option_name is required"
+  [[ "$value" != /* ]] || fatal "$option_name must be relative"
+  [[ "$value" != *".."* ]] || fatal "$option_name must not contain path traversal"
+  [[ "$value" =~ ^[A-Za-z0-9._/-]+$ ]] || fatal "$option_name contains invalid characters"
+}
+
 validate_matrix_options() {
   validate_usecase "$usecase"
   validate_simple_name "--run-name" "$run_name"
@@ -278,6 +323,20 @@ validate_matrix_options() {
   [[ "$min_gpu_memory_gb" =~ ^[0-9]+$ ]] || fatal "--min-gpu-memory-gb must be a non-negative integer"
   [[ "$max_iter" =~ ^[0-9]+$ ]] || fatal "--max-iter must be a non-negative integer"
   [[ "$save_iter" =~ ^[0-9]+$ ]] || fatal "--save-iter must be a non-negative integer"
+  validate_simple_name "--board" "$board"
+  validate_simple_name "--scene-filename" "$scene_filename"
+  validate_relative_asset_path "--real-image-filename" "$real_image_filename"
+  [[ "$render_patches" =~ ^-?[0-9]+$ ]] || fatal "--render-patches must be an integer"
+  [[ "$crop_max_emit" == "null" || "$crop_max_emit" =~ ^[0-9]+$ ]] || \
+    fatal "--crop-max-emit must be null or a non-negative integer"
+  [[ "$crop_offset" =~ ^[0-9]+$ ]] || fatal "--crop-offset must be a non-negative integer"
+  case ",$defect_modes," in
+    ,all,|*,shift,*|*,tombstone,*|*,sideflip,*) ;;
+    *) fatal "--defect-modes must be all or a comma-separated subset of shift,tombstone,sideflip" ;;
+  esac
+  validate_http_url "--image-edit-endpoint" "$image_edit_endpoint"
+  [[ "$image_edit_model" == "nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL" ]] || \
+    fatal "--image-edit-model must be nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL"
   validate_json_value "--anomaly-types-json" "$anomaly_types_json"
   case "$default_spatial_dependency" in
     free|text|cad) ;;
@@ -291,6 +350,9 @@ validate_matrix_options() {
     fatal "--pretrained-model-sizes contains unsupported characters"
   if [[ "$workflow" == "finetune" && "$usecase" != "pcb" ]]; then
     fatal "finetune is live-validated only for --usecase pcb in this commit"
+  fi
+  if is_pipeline_workflow "$workflow" && [[ "$usecase" != "pcb" ]]; then
+    fatal "$workflow is supported only for --usecase pcb"
   fi
 }
 
@@ -449,6 +511,26 @@ validate_source_inventory() {
       require_path "$dig_root/scripts/render_defect_spec.py" "DIG defect spec renderer"
       require_path "$dig_root/references/flows/texture_defect_generation_day1_manual_roi.md" "DIG Day 1 manual ROI flow reference"
       ;;
+    day0-texture-defects)
+      require_path "$dig_root/assets/configs/texture_defect_generation_day0.yaml" "DIG Day 0 texture-defect config"
+      require_path "$dig_root/assets/cookbooks/pcb/ag_config.yaml" "DIG PCB cookbook"
+      require_path "$dig_root/scripts/render_defect_spec.py" "DIG defect spec renderer"
+      require_path "$dig_root/references/flows/texture_defect_generation_day0.md" "DIG Day 0 texture-defect flow reference"
+      ;;
+    day0-good-image)
+      require_path "$dig_root/assets/configs/good_image_generation.yaml" "DIG Day 0 good-image config"
+      require_path "$dig_root/references/flows/good_image_generation.md" "DIG Day 0 good-image flow reference"
+      ;;
+    day0-structural-defects)
+      require_path "$dig_root/assets/configs/structural_defect_generation.yaml" "DIG Day 0 structural-defect config"
+      require_path "$dig_root/references/flows/structural_defect_generation.md" "DIG Day 0 structural-defect flow reference"
+      ;;
+    day1-real-photo-alignment)
+      require_path "$dig_root/assets/configs/texture_defect_generation_day1_real_alignment.yaml" "DIG Day 1 real-photo alignment config"
+      require_path "$dig_root/assets/cookbooks/pcb/ag_config.yaml" "DIG PCB cookbook"
+      require_path "$dig_root/scripts/render_defect_spec.py" "DIG defect spec renderer"
+      require_path "$dig_root/references/flows/texture_defect_generation_day1_real_alignment.md" "DIG Day 1 real-photo alignment flow reference"
+      ;;
     *)
       fatal "Unsupported workflow: $selected_workflow"
       ;;
@@ -456,7 +538,8 @@ validate_source_inventory() {
 }
 
 validate_local_assets() {
-  local selected_workflow="$1" template_file="$2"
+  local selected_workflow="$1" template_file="$2" selected_board="$3"
+  local board_cookbook_dir="$REPO_ROOT/data-factory/workflows/azureml/dig/cookbooks/pcb/$selected_board"
 
   require_path "$template_file" "Azure ML job template"
   require_path "$REPO_ROOT/data-factory/.amlignore" "Azure ML ignore file"
@@ -481,6 +564,36 @@ validate_local_assets() {
     day1-manual-roi)
       require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/run-day1-manual-roi.sh" "Day 1 manual ROI runner"
       ;;
+    day0-texture-defects)
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-usd2roi-day0.sh" "Day 0 usd2roi stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-image-edit.sh" "Image-Edit stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-day0-anomaly-infer.sh" "Day 0 AnomalyGen stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/helpers/render-defect-spec.py" "Azure ML defect spec renderer"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/helpers/pick-best-step.sh" "checkpoint step helper"
+      require_path "$board_cookbook_dir/day0_image.yaml" "Day 0 image cookbook for board $selected_board"
+      require_path "$board_cookbook_dir/day0_crop.yaml" "Day 0 crop cookbook for board $selected_board"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/cookbooks/pcb/augmentation_config_ovsl2sl.yaml" "Image-Edit cookbook"
+      ;;
+    day0-good-image)
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-usd2roi-day0.sh" "Day 0 usd2roi stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-image-edit.sh" "Image-Edit stage runner"
+      require_path "$board_cookbook_dir/day0_image.yaml" "Day 0 image cookbook for board $selected_board"
+      require_path "$board_cookbook_dir/day0_crop.yaml" "Day 0 crop cookbook for board $selected_board"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/cookbooks/pcb/augmentation_config_ovsl2sl.yaml" "Image-Edit cookbook"
+      ;;
+    day0-structural-defects)
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-structural-render.sh" "structural render stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-image-edit.sh" "Image-Edit stage runner"
+      require_path "$board_cookbook_dir/defect_image.yaml" "structural defect cookbook for board $selected_board"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/cookbooks/pcb/augmentation_config_ovsl2sl.yaml" "Image-Edit cookbook"
+      ;;
+    day1-real-photo-alignment)
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-usd2roi-day1-real-alignment.sh" "Day 1 real-photo usd2roi stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/stages/run-day1-pcb-anomaly-infer.sh" "Day 1 PCBA AnomalyGen stage runner"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/helpers/render-defect-spec.py" "Azure ML defect spec renderer"
+      require_path "$REPO_ROOT/data-factory/workflows/azureml/dig/helpers/pick-best-step.sh" "checkpoint step helper"
+      require_path "$board_cookbook_dir/usd2roi_nvpcb.yaml" "Day 1 usd2roi cookbook for board $selected_board"
+      ;;
   esac
 }
 
@@ -497,7 +610,12 @@ render_job_file() {
   local max_iter_value="${26}" save_iter_value="${27}" use_pretrained_checkpoint_value="${28}"
   local pretrained_model_sizes_value="${29}"
   local glass_zip_path="${30}"
+  local board_value="${31}" scene_filename_value="${32}" real_image_filename_value="${33}"
+  local render_patches_value="${34}" crop_max_emit_value="${35}" defect_modes_value="${36}"
+  local crop_offset_value="${37}" image_edit_endpoint_value="${38}" image_edit_model_value="${39}"
+  local simulation_image_reference="${40}" augmentation_image_reference="${41}"
   local usecase_model_uri raw_dataset_uri pcb_assets_uri pretrained_output_uri pretrained_uri cosmos_cache_uri glass_zip_uri results_uri
+  local run_root_uri usd2roi_components_uri augment_uri anomaly_uri structural_defect_uri structural_defect_edited_uri usd2roi_day1_uri
   local rendered_ngc_secret_name="${ngc_secret_name:-none}"
   local code_path="$REPO_ROOT/data-factory"
 
@@ -513,6 +631,119 @@ render_job_file() {
     day1-manual-roi) results_uri="$(azureml_uri "$datastore_name" "$output_prefix_path/$run_output_name/day1-manual-roi")" ;;
     *) results_uri="$(azureml_uri "$datastore_name" "$output_prefix_path/$run_output_name")" ;;
   esac
+
+  if is_pipeline_workflow "$selected_workflow"; then
+    run_root_uri="$output_prefix_path/$run_output_name"
+    usd2roi_components_uri="$(azureml_uri "$datastore_name" "$run_root_uri/day0-usd2roi")"
+    augment_uri="$(azureml_uri "$datastore_name" "$run_root_uri/day0-image-edit")"
+    anomaly_uri="$(azureml_uri "$datastore_name" "$run_root_uri/anomaly")"
+    structural_defect_uri="$(azureml_uri "$datastore_name" "$run_root_uri/structural-render")"
+    structural_defect_edited_uri="$(azureml_uri "$datastore_name" "$run_root_uri/structural-image-edit")"
+    usd2roi_day1_uri="$(azureml_uri "$datastore_name" "$run_root_uri/day1-usd2roi")"
+
+    COMPUTE_NAME="azureml:${compute_name}" \
+    INSTANCE_TYPE_NAME="$instance_type_name" \
+    SIMULATION_IMAGE="$simulation_image_reference" \
+    AUGMENTATION_IMAGE="$augmentation_image_reference" \
+    ANOMALYGEN_IMAGE="$image_reference" \
+    CODE_PATH="$code_path" \
+    PCB_ASSETS_URI="$pcb_assets_uri" \
+    RAW_DATASET_URI="$raw_dataset_uri" \
+    PRETRAINED_URI="$pretrained_uri" \
+    USECASE_MODEL_URI="$usecase_model_uri" \
+    USD2ROI_COMPONENTS_URI="$usd2roi_components_uri" \
+    AUGMENT_URI="$augment_uri" \
+    ANOMALY_URI="$anomaly_uri" \
+    STRUCTURAL_DEFECT_URI="$structural_defect_uri" \
+    STRUCTURAL_DEFECT_EDITED_URI="$structural_defect_edited_uri" \
+    USD2ROI_DAY1_URI="$usd2roi_day1_uri" \
+    RUN_NAME="$run_output_name" \
+    BOARD="$board_value" \
+    SCENE_FILENAME="$scene_filename_value" \
+    REAL_IMAGE_FILENAME="$real_image_filename_value" \
+    RENDER_PATCHES="$render_patches_value" \
+    CROP_MAX_EMIT="$crop_max_emit_value" \
+    DEFECT_MODES="$defect_modes_value" \
+    CROP_OFFSET="$crop_offset_value" \
+    IMAGE_EDIT_ENDPOINT="$image_edit_endpoint_value" \
+    IMAGE_EDIT_MODEL="$image_edit_model_value" \
+    CHECKPOINT_STEP="$checkpoint_step_value" \
+    ANOMALY_TYPES_JSON="$anomaly_types_json_value" \
+    NUM_SDG="$num_sdg_value" \
+    DEFAULT_SPATIAL_DEPENDENCY="$spatial_dependency_value" \
+    MIN_GPU_MEMORY_GB="$min_gpu_memory_gb_value" \
+    KEY_VAULT_URL_VALUE="$vault_url" \
+    HF_SECRET_NAME="$hf_secret_name" \
+    NGC_SECRET_NAME="$rendered_ngc_secret_name" \
+    python3 - "$source_file" "$rendered_file" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def quoted(value: str) -> str:
+    return json.dumps(value)
+
+
+source_file, rendered_file = sys.argv[1:]
+with open(source_file, encoding="utf-8") as source:
+    text = source.read()
+
+json_scalar = "'" + os.environ["ANOMALY_TYPES_JSON"].replace("'", "''") + "'"
+replacements = {
+    "__COMPUTE__": os.environ["COMPUTE_NAME"],
+    "__INSTANCE_TYPE__": os.environ["INSTANCE_TYPE_NAME"],
+    "__SIMULATION_IMAGE__": os.environ["SIMULATION_IMAGE"],
+    "__AUGMENTATION_IMAGE__": os.environ["AUGMENTATION_IMAGE"],
+    "__ANOMALYGEN_IMAGE__": os.environ["ANOMALYGEN_IMAGE"],
+    "code: ../../../../": "code: " + os.environ["CODE_PATH"],
+    "__PCB_ASSETS_URI__": os.environ["PCB_ASSETS_URI"],
+    "__RAW_DATASET_URI__": os.environ["RAW_DATASET_URI"],
+    "__PRETRAINED_URI__": os.environ["PRETRAINED_URI"],
+    "__USECASE_MODEL_URI__": os.environ["USECASE_MODEL_URI"],
+    "__USD2ROI_COMPONENTS_URI__": os.environ["USD2ROI_COMPONENTS_URI"],
+    "__AUGMENT_URI__": os.environ["AUGMENT_URI"],
+    "__ANOMALY_URI__": os.environ["ANOMALY_URI"],
+    "__STRUCTURAL_DEFECT_URI__": os.environ["STRUCTURAL_DEFECT_URI"],
+    "__STRUCTURAL_DEFECT_EDITED_URI__": os.environ["STRUCTURAL_DEFECT_EDITED_URI"],
+    "__USD2ROI_DAY1_URI__": os.environ["USD2ROI_DAY1_URI"],
+    "__RUN_NAME__": os.environ["RUN_NAME"],
+    "__BOARD__": os.environ["BOARD"],
+    "__SCENE_FILENAME__": os.environ["SCENE_FILENAME"],
+    "__REAL_IMAGE_FILENAME__": os.environ["REAL_IMAGE_FILENAME"],
+    "__RENDER_PATCHES__": os.environ["RENDER_PATCHES"],
+    "__CROP_MAX_EMIT__": os.environ["CROP_MAX_EMIT"],
+    "__DEFECT_MODES__": os.environ["DEFECT_MODES"],
+    "__CROP_OFFSET__": os.environ["CROP_OFFSET"],
+    "__IMAGE_EDIT_ENDPOINT__": quoted(os.environ["IMAGE_EDIT_ENDPOINT"]),
+    "__IMAGE_EDIT_MODEL__": os.environ["IMAGE_EDIT_MODEL"],
+    "__CHECKPOINT_STEP__": os.environ["CHECKPOINT_STEP"],
+    '"__ANOMALY_TYPES_JSON__"': json_scalar,
+    "__ANOMALY_TYPES_JSON__": os.environ["ANOMALY_TYPES_JSON"],
+    "__NUM_SDG__": os.environ["NUM_SDG"],
+    "__DEFAULT_SPATIAL_DEPENDENCY__": os.environ["DEFAULT_SPATIAL_DEPENDENCY"],
+    "__MIN_GPU_MEMORY_GB__": os.environ["MIN_GPU_MEMORY_GB"],
+    "__KEY_VAULT_URL__": os.environ["KEY_VAULT_URL_VALUE"],
+    "__HF_SECRET_NAME__": os.environ["HF_SECRET_NAME"],
+    "__NGC_SECRET_NAME__": os.environ["NGC_SECRET_NAME"],
+}
+for token, value in replacements.items():
+    text = text.replace(token, value)
+if "__" in text:
+    unresolved = sorted({part.split("__", 1)[0] for part in text.split("__")[1::2]})
+    raise SystemExit(f"unresolved template placeholders remain: {unresolved}")
+with open(rendered_file, "w", encoding="utf-8") as rendered:
+    rendered.write(text)
+PY
+
+    local raw_storage_prefix="azure:/"
+    if grep -q "${raw_storage_prefix}/" "$rendered_file"; then
+      fatal "Rendered Azure ML job contains a raw storage path: $rendered_file"
+    fi
+    return 0
+  fi
 
   awk \
     -v selected_workflow="$selected_workflow" \
@@ -680,8 +911,15 @@ validate_rendered_job() {
     grep -q '^identity:$' "$rendered_file" || fatal "Rendered job must declare managed identity"
     grep -q '^compute: azureml:' "$rendered_file" || fatal "Rendered job must target Azure ML compute"
     grep -Eq 'mode: (download|upload)' "$rendered_file" || fatal "Rendered job must declare Azure ML data modes"
+  elif grep -q "^\$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json$" "$rendered_file"; then
+    grep -q '^type: pipeline$' "$rendered_file" || fatal "Rendered job type must be pipeline"
+    grep -q '^identity:$' "$rendered_file" || fatal "Rendered pipeline must declare managed identity"
+    grep -q '^  default_compute: azureml:' "$rendered_file" || fatal "Rendered pipeline must target Azure ML default compute"
+    grep -q '^jobs:$' "$rendered_file" || fatal "Rendered pipeline must declare jobs"
+    grep -q '^    type: command$' "$rendered_file" || fatal "Rendered pipeline must declare command child jobs"
+    grep -Eq 'mode: (download|upload)' "$rendered_file" || fatal "Rendered pipeline must declare Azure ML data modes"
   else
-    fatal "Rendered job is not an Azure ML commandJob schema: $rendered_file"
+    fatal "Rendered job is not an Azure ML commandJob or pipelineJob schema: $rendered_file"
   fi
   grep -q 'azureml://datastores/' "$rendered_file" || fatal "Rendered job must use Azure ML datastore URIs"
   local raw_storage_prefix="azure:/"
@@ -738,6 +976,22 @@ print_artifact_expectations() {
     day1-manual-roi)
       print_kv "Expected Output" "runs/$selected_run_name/day1-manual-roi"
       print_kv "Required Evidence" "verify_output.sh success, artifact_manifest.txt, non-empty inference output for $selected_usecase"
+      ;;
+    day0-texture-defects)
+      print_kv "Expected Outputs" "runs/$selected_run_name/day0-usd2roi, day0-image-edit, anomaly"
+      print_kv "Required Evidence" "ROI crops, Image-Edit outputs, verify_output.sh success, artifact_manifest.txt"
+      ;;
+    day0-good-image)
+      print_kv "Expected Outputs" "runs/$selected_run_name/day0-usd2roi, day0-image-edit"
+      print_kv "Required Evidence" "ROI crops, Image-Edit outputs, artifact_manifest.txt"
+      ;;
+    day0-structural-defects)
+      print_kv "Expected Outputs" "runs/$selected_run_name/structural-render, structural-image-edit"
+      print_kv "Required Evidence" "structural RGB crops, Image-Edit outputs, artifact_manifest.txt"
+      ;;
+    day1-real-photo-alignment)
+      print_kv "Expected Outputs" "runs/$selected_run_name/day1-usd2roi, anomaly"
+      print_kv "Required Evidence" "aligned ROI crops, verify_output.sh success, artifact_manifest.txt"
       ;;
   esac
 }
@@ -849,6 +1103,15 @@ checkpoint_step="${DIG_CHECKPOINT_STEP:-}"
 anomaly_types_json="${DIG_ANOMALY_TYPES_JSON:-}"
 num_sdg="${DIG_NUM_SDG:-30}"
 default_spatial_dependency="${DIG_DEFAULT_SPATIAL_DEPENDENCY:-}"
+board="${DIG_BOARD:-0603_H100}"
+scene_filename="${DIG_SCENE_FILENAME:-spark_lighting.usd}"
+real_image_filename="${DIG_REAL_IMAGE_FILENAME:-input_real_image/0603_H100.jpg}"
+render_patches="${DIG_RENDER_PATCHES:-5}"
+crop_max_emit="${DIG_CROP_MAX_EMIT:-null}"
+defect_modes="${DIG_DEFECT_MODES:-all}"
+crop_offset="${DIG_CROP_OFFSET:-10}"
+image_edit_endpoint="${DIG_IMAGE_EDIT_ENDPOINT:-http://localhost:8000/v1}"
+image_edit_model="${DIG_IMAGE_EDIT_MODEL:-nvidia/Qwen-Image-Edit-NVPCB-OVSL2SL}"
 model_size="${DIG_MODEL_SIZE:-2b}"
 num_gpus="${DIG_NUM_GPUS:-1}"
 min_gpu_memory_gb="${DIG_MIN_GPU_MEMORY_GB:-40}"
@@ -860,6 +1123,8 @@ key_vault_url="${KEY_VAULT_URL:-}"
 hf_secret_name="${HF_TOKEN_SECRET_NAME:-paidf-hf-token}"
 ngc_secret_name="${NGC_API_KEY_SECRET_NAME:-none}"
 image="${PAIDF_ANOMALYGEN_IMAGE:-nvcr.io/nvidia/paidf-anomalygen:1.0.0}"
+simulation_image="${PAIDF_SIMULATION_IMAGE:-nvcr.io/nvidia/paidf-simulation:1.0.0}"
+augmentation_image="${PAIDF_AUGMENTATION_IMAGE:-nvcr.io/nvidia/paidf-augmentation:1.0.0}"
 rendered_job_output=""
 
 assets_only=false
@@ -899,6 +1164,15 @@ while [[ $# -gt 0 ]]; do
     --anomaly-types-json)                anomaly_types_json="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --num-sdg)                           num_sdg="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --default-spatial-dependency)        default_spatial_dependency="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --board)                             board="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --scene-filename)                    scene_filename="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --real-image-filename)               real_image_filename="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --render-patches)                    render_patches="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --crop-max-emit)                     crop_max_emit="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --defect-modes)                      defect_modes="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --crop-offset)                       crop_offset="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --image-edit-endpoint)               image_edit_endpoint="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --image-edit-model)                  image_edit_model="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --model-size)                        model_size="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --num-gpus)                          num_gpus="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --min-gpu-memory-gb)                 min_gpu_memory_gb="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
@@ -910,6 +1184,8 @@ while [[ $# -gt 0 ]]; do
     --hf-token-secret-name|--hf-secret-name) hf_secret_name="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --ngc-api-key-secret-name|--ngc-secret-name) ngc_secret_name="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --image)                             image="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --simulation-image)                  simulation_image="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
+    --augmentation-image)                augmentation_image="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --rendered-job-output)               rendered_job_output="$(require_option_value "$1" "${2:-}")"; shift 2 ;;
     --assets-only)                       assets_only=true; shift ;;
     --validate-cloud)                    validate_cloud=true; shift ;;
@@ -964,7 +1240,12 @@ usecase="${usecase:-$(default_usecase_for_workflow "$workflow")}"
 run_name="${run_name:-$(default_run_name_for_workflow "$workflow")}"
 checkpoint_step="${checkpoint_step:-$(default_checkpoint_step_for_usecase "$usecase")}"
 anomaly_types_json="${anomaly_types_json:-$(default_anomaly_types_for_workflow "$workflow" "$usecase")}"
-default_spatial_dependency="${default_spatial_dependency:-free}"
+if [[ -z "$default_spatial_dependency" ]]; then
+  case "$workflow" in
+    day1-real-photo-alignment) default_spatial_dependency="cad" ;;
+    *) default_spatial_dependency="free" ;;
+  esac
+fi
 use_pretrained_checkpoint="$(normalize_bool "--use-pretrained-checkpoint" "$use_pretrained_checkpoint")"
 validate_matrix_options
 
@@ -997,8 +1278,24 @@ case "$workflow" in
     job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/day1-manual-roi.yaml}"
     instance_type="${instance_type:-h100dedicated}"
     ;;
+  day0-texture-defects)
+    job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/pipelines/day0-texture-defects.yaml}"
+    instance_type="${instance_type:-h100spot}"
+    ;;
+  day0-good-image)
+    job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/pipelines/day0-good-image.yaml}"
+    instance_type="${instance_type:-h100spot}"
+    ;;
+  day0-structural-defects)
+    job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/pipelines/day0-structural-defects.yaml}"
+    instance_type="${instance_type:-h100spot}"
+    ;;
+  day1-real-photo-alignment)
+    job_file="${job_file:-$REPO_ROOT/data-factory/workflows/azureml/dig/pipelines/day1-real-photo-alignment.yaml}"
+    instance_type="${instance_type:-h100spot}"
+    ;;
   *)
-    fatal "Unsupported workflow: $workflow (use: setup-pretrained, setup-pcb, setup-metal, setup-glass, finetune, day1-manual-roi)"
+    fatal "Unsupported workflow: $workflow (use: setup-pretrained, setup-pcb, setup-metal, setup-glass, finetune, day1-manual-roi, day0-texture-defects, day0-good-image, day0-structural-defects, day1-real-photo-alignment)"
     ;;
 esac
 
@@ -1025,9 +1322,11 @@ validate_key_vault_url "$key_vault_url"
 validate_secret_name "--hf-token-secret-name" "$hf_secret_name"
 [[ -n "$ngc_secret_name" ]] && validate_secret_name "--ngc-api-key-secret-name" "$ngc_secret_name"
 validate_image_reference "$image"
+validate_image_reference "$simulation_image"
+validate_image_reference "$augmentation_image"
 
 validate_source_inventory "$data_factory_source" "$workflow" "$usecase"
-validate_local_assets "$workflow" "$job_file"
+validate_local_assets "$workflow" "$job_file" "$board"
 
 rendered_job_file="$(mktemp "${TMPDIR:-/tmp}/paidf-dig-${workflow}.XXXXXX")"
 trap 'rm -f "${rendered_job_file:-}"' EXIT
@@ -1036,7 +1335,9 @@ render_job_file "$workflow" "$job_file" "$rendered_job_file" "$compute" "$instan
   "$pretrained_datastore" "$pretrained_storage_root" "$cosmos_cache_datastore" "$cosmos_cache_root" \
   "$usecase" "$run_name" "$checkpoint_step" "$anomaly_types_json" "$num_sdg" "$default_spatial_dependency" \
   "$model_size" "$num_gpus" "$min_gpu_memory_gb" "$max_iter" "$save_iter" "$use_pretrained_checkpoint" \
-  "$pretrained_model_sizes" "$glass_zip_path"
+  "$pretrained_model_sizes" "$glass_zip_path" "$board" "$scene_filename" "$real_image_filename" \
+  "$render_patches" "$crop_max_emit" "$defect_modes" "$crop_offset" "$image_edit_endpoint" "$image_edit_model" \
+  "$simulation_image" "$augmentation_image"
 validate_rendered_job "$rendered_job_file"
 write_rendered_job_output "$rendered_job_file" "$rendered_job_output"
 
@@ -1067,6 +1368,15 @@ if [[ "$config_preview" == "true" ]]; then
   print_kv "Checkpoint Step" "$checkpoint_step"
   print_kv "Number Of SDG" "$num_sdg"
   print_kv "Spatial Dependency" "$default_spatial_dependency"
+  print_kv "Board" "$board"
+  print_kv "Scene Filename" "$scene_filename"
+  print_kv "Real Image Filename" "$real_image_filename"
+  print_kv "Render Patches" "$render_patches"
+  print_kv "Crop Max Emit" "$crop_max_emit"
+  print_kv "Defect Modes" "$defect_modes"
+  print_kv "Crop Offset" "$crop_offset"
+  print_kv "Image-Edit Endpoint" "$image_edit_endpoint"
+  print_kv "Image-Edit Model" "$image_edit_model"
   print_kv "Model Size" "$model_size"
   print_kv "GPU Count" "$num_gpus"
   print_kv "Minimum GPU Memory" "$min_gpu_memory_gb GiB"
@@ -1078,6 +1388,8 @@ if [[ "$config_preview" == "true" ]]; then
   print_kv "HF Token" "$(redacted_reference "$hf_secret_name")"
   print_kv "NGC API Key" "$(redacted_reference "$ngc_secret_name")"
   print_kv "Image" "$image"
+  print_kv "Simulation Image" "$simulation_image"
+  print_kv "Augmentation Image" "$augmentation_image"
   print_kv "Assets Only" "$assets_only"
   print_kv "Validate Cloud" "$validate_cloud"
   print_kv "Submit Requested" "$submit_requested"
@@ -1092,6 +1404,8 @@ print_kv "Rendered Job Output" "${rendered_job_output:-<none>}"
 print_kv "Data Factory Source" "$data_factory_source"
 print_kv "Run Name" "$run_name"
 print_kv "Use Case" "$usecase"
+print_kv "Board" "$board"
+print_kv "Image-Edit Model" "$image_edit_model"
 print_kv "HF Token" "$(redacted_reference "$hf_secret_name")"
 print_kv "NGC API Key" "$(redacted_reference "$ngc_secret_name")"
 info "Rendered Azure ML job uses datastore URIs only"
@@ -1152,7 +1466,9 @@ az_args=(
   --file "$rendered_job_file"
 )
 
-az_args+=(--set "code=$REPO_ROOT/data-factory")
+if ! is_pipeline_workflow "$workflow"; then
+  az_args+=(--set "code=$REPO_ROOT/data-factory")
+fi
 
 az_args+=(--query "name" -o "tsv")
 

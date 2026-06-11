@@ -1,0 +1,156 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+display_name: paidf-dig-day0-texture-defects
+description: DIG Day 0 PCBA texture-defect pipeline with usd2roi, image-edit, and AnomalyGen stages.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+settings:
+  default_compute: __COMPUTE__
+
+inputs:
+  pcb_assets:
+    type: uri_folder
+    path: __PCB_ASSETS_URI__
+    mode: download
+  raw_dataset:
+    type: uri_folder
+    path: __RAW_DATASET_URI__
+    mode: download
+  pretrained_model:
+    type: uri_folder
+    path: __PRETRAINED_URI__
+    mode: download
+  usecase_model:
+    type: uri_folder
+    path: __USECASE_MODEL_URI__
+    mode: download
+  run_name: __RUN_NAME__
+  board: __BOARD__
+  scene_filename: __SCENE_FILENAME__
+  render_patches: "__RENDER_PATCHES__"
+  crop_max_emit: "__CROP_MAX_EMIT__"
+  image_edit_endpoint: __IMAGE_EDIT_ENDPOINT__
+  image_edit_model: __IMAGE_EDIT_MODEL__
+  checkpoint_step: "__CHECKPOINT_STEP__"
+  anomaly_types_json: "__ANOMALY_TYPES_JSON__"
+  num_sdg: "__NUM_SDG__"
+  min_gpu_memory_gb: "__MIN_GPU_MEMORY_GB__"
+
+outputs:
+  usd2roi_components:
+    type: uri_folder
+    path: __USD2ROI_COMPONENTS_URI__
+    mode: upload
+  augment:
+    type: uri_folder
+    path: __AUGMENT_URI__
+    mode: upload
+  anomaly:
+    type: uri_folder
+    path: __ANOMALY_URI__
+    mode: upload
+
+jobs:
+  usd2roi_render:
+    type: command
+    display_name: paidf-dig-day0-texture-usd2roi
+    code: ../../../../
+    environment:
+      image: __SIMULATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      pcb_assets: ${{parent.inputs.pcb_assets}}
+      board: ${{parent.inputs.board}}
+      scene_filename: ${{parent.inputs.scene_filename}}
+      render_patches: ${{parent.inputs.render_patches}}
+      crop_max_emit: ${{parent.inputs.crop_max_emit}}
+    outputs:
+      usd2roi_components: ${{parent.outputs.usd2roi_components}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-usd2roi-day0.sh
+      --pcb-assets ${{inputs.pcb_assets}}
+      --output-dir ${{outputs.usd2roi_components}}
+      --board ${{inputs.board}}
+      --scene-filename ${{inputs.scene_filename}}
+      --render-patches ${{inputs.render_patches}}
+      --crop-max-emit ${{inputs.crop_max_emit}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      NVIDIA_DRIVER_CAPABILITIES: all
+      DIG_AML_KIT_TIMEOUT_SECONDS: "1200"
+    resources:
+      shm_size: 32g
+      instance_type: __INSTANCE_TYPE__
+
+  image_edit:
+    type: command
+    display_name: paidf-dig-day0-texture-image-edit
+    code: ../../../../
+    environment:
+      image: __AUGMENTATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      usd2roi_components: ${{parent.jobs.usd2roi_render.outputs.usd2roi_components}}
+      image_edit_endpoint: ${{parent.inputs.image_edit_endpoint}}
+      image_edit_model: ${{parent.inputs.image_edit_model}}
+    outputs:
+      augment: ${{parent.outputs.augment}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-image-edit.sh
+      --input-dir ${{inputs.usd2roi_components}}
+      --output-dir ${{outputs.augment}}
+      --image-edit-endpoint ${{inputs.image_edit_endpoint}}
+      --image-edit-model ${{inputs.image_edit_model}}
+      --layout day0-roi
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+    resources:
+      instance_type: __INSTANCE_TYPE__
+
+  anomaly_infer:
+    type: command
+    display_name: paidf-dig-day0-texture-anomaly-infer
+    code: ../../../../
+    environment:
+      image: __ANOMALYGEN_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      raw_dataset: ${{parent.inputs.raw_dataset}}
+      pretrained_model: ${{parent.inputs.pretrained_model}}
+      usecase_model: ${{parent.inputs.usecase_model}}
+      usd2roi_components: ${{parent.jobs.usd2roi_render.outputs.usd2roi_components}}
+      augment: ${{parent.jobs.image_edit.outputs.augment}}
+      run_name: ${{parent.inputs.run_name}}
+      checkpoint_step: ${{parent.inputs.checkpoint_step}}
+      anomaly_types_json: ${{parent.inputs.anomaly_types_json}}
+      num_sdg: ${{parent.inputs.num_sdg}}
+      min_gpu_memory_gb: ${{parent.inputs.min_gpu_memory_gb}}
+    outputs:
+      anomaly: ${{parent.outputs.anomaly}}
+    command: >-
+      bash workflows/azureml/common/keyvault-env.sh --
+      bash workflows/azureml/dig/stages/run-day0-anomaly-infer.sh
+      --raw-dataset ${{inputs.raw_dataset}}
+      --pretrained-model ${{inputs.pretrained_model}}
+      --usecase-model ${{inputs.usecase_model}}
+      --usd2roi-components ${{inputs.usd2roi_components}}
+      --augment-output ${{inputs.augment}}
+      --output-dir ${{outputs.anomaly}}
+      --name ${{inputs.run_name}}
+      --checkpoint-step ${{inputs.checkpoint_step}}
+      --anomaly-types-json '${{inputs.anomaly_types_json}}'
+      --num-sdg ${{inputs.num_sdg}}
+      --min-gpu-memory-gb ${{inputs.min_gpu_memory_gb}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      KEY_VAULT_URL: "__KEY_VAULT_URL__"
+      HF_TOKEN_SECRET_NAME: "__HF_SECRET_NAME__"
+      NGC_API_KEY_SECRET_NAME: "__NGC_SECRET_NAME__"
+    resources:
+      instance_type: __INSTANCE_TYPE__

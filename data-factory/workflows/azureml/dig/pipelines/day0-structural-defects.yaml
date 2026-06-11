@@ -1,0 +1,95 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+display_name: paidf-dig-day0-structural-defects
+description: DIG Day 0 PCBA structural-defect pipeline with simulation and image-edit stages.
+experiment_name: paidf-dig
+identity:
+  type: managed_identity
+
+settings:
+  default_compute: __COMPUTE__
+
+inputs:
+  pcb_assets:
+    type: uri_folder
+    path: __PCB_ASSETS_URI__
+    mode: download
+  run_name: __RUN_NAME__
+  board: __BOARD__
+  scene_filename: __SCENE_FILENAME__
+  render_patches: "__RENDER_PATCHES__"
+  defect_modes: __DEFECT_MODES__
+  crop_offset: "__CROP_OFFSET__"
+  image_edit_endpoint: __IMAGE_EDIT_ENDPOINT__
+  image_edit_model: __IMAGE_EDIT_MODEL__
+
+outputs:
+  structural_defect:
+    type: uri_folder
+    path: __STRUCTURAL_DEFECT_URI__
+    mode: upload
+  structural_defect_edited:
+    type: uri_folder
+    path: __STRUCTURAL_DEFECT_EDITED_URI__
+    mode: upload
+
+jobs:
+  structural_render:
+    type: command
+    display_name: paidf-dig-day0-structural-render
+    code: ../../../../
+    environment:
+      image: __SIMULATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      pcb_assets: ${{parent.inputs.pcb_assets}}
+      board: ${{parent.inputs.board}}
+      scene_filename: ${{parent.inputs.scene_filename}}
+      render_patches: ${{parent.inputs.render_patches}}
+      defect_modes: ${{parent.inputs.defect_modes}}
+      crop_offset: ${{parent.inputs.crop_offset}}
+    outputs:
+      structural_defect: ${{parent.outputs.structural_defect}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-structural-render.sh
+      --pcb-assets ${{inputs.pcb_assets}}
+      --output-dir ${{outputs.structural_defect}}
+      --board ${{inputs.board}}
+      --scene-filename ${{inputs.scene_filename}}
+      --render-patches ${{inputs.render_patches}}
+      --defect-modes ${{inputs.defect_modes}}
+      --crop-offset ${{inputs.crop_offset}}
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      NVIDIA_DRIVER_CAPABILITIES: all
+      DIG_AML_KIT_TIMEOUT_SECONDS: "1200"
+    resources:
+      shm_size: 32g
+      instance_type: __INSTANCE_TYPE__
+
+  image_edit:
+    type: command
+    display_name: paidf-dig-day0-structural-image-edit
+    code: ../../../../
+    environment:
+      image: __AUGMENTATION_IMAGE__
+    compute: __COMPUTE__
+    inputs:
+      structural_defect: ${{parent.jobs.structural_render.outputs.structural_defect}}
+      image_edit_endpoint: ${{parent.inputs.image_edit_endpoint}}
+      image_edit_model: ${{parent.inputs.image_edit_model}}
+    outputs:
+      structural_defect_edited: ${{parent.outputs.structural_defect_edited}}
+    command: >-
+      bash workflows/azureml/dig/stages/run-image-edit.sh
+      --input-dir ${{inputs.structural_defect}}
+      --output-dir ${{outputs.structural_defect_edited}}
+      --image-edit-endpoint ${{inputs.image_edit_endpoint}}
+      --image-edit-model ${{inputs.image_edit_model}}
+      --layout structural-rgb
+    environment_variables:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+    resources:
+      instance_type: __INSTANCE_TYPE__
